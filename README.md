@@ -2,6 +2,10 @@
 
 human-feedback is a free skill for Claude Code, Codex, and other AI agents. When your agent wants you to review a plan, report, or mockup, it opens the work as a page where you leave emoji reactions and doc comments. You copy and paste all your notes back to the agent, and the agent reopens the doc for another round of feedback, replies, and addresses your feedback.
 
+```sh
+npx skills add jasonericsiegel/human-feedback
+```
+
 ![A review page titled 8 Days in Thailand. The outline on the left nests each day under Krabi or Bangkok, the trip page is in the middle, and the notes are on the right. The human's Mac cursor sits beside selected words and the Comment, Edit, and Highlight action pill. A held heart sticker throws little hearts beside "a short walk from the sand", joined by a line to its note. Codex's magenta cursor works on Day 2, and Claude's violet cursor is typing a question into a new thread.](media/human-feedback-review-page.png)
 
 ## Types of things you can review
@@ -214,6 +218,10 @@ Here's what you can do in each way of reviewing your agent's work:
 **Compared with replying in chat:** You select the words you want to comment on and type beside them, then send every note in one paste. Earlier rounds stay a click away.
 
 **Compared with Claude Docs:** Works with Claude Code, Codex, and other agents, needs no account, and shows the page or mockup your agent actually build in a beautiful, easy to use interface.
+
+## Better together
+
+human-feedback works on its own. When [deslop-writing](https://github.com/jasonericsiegel/deslop-writing) is installed too, your agent uses it to write plainer questions and replies on the page.
 
 ## Your notes stay on your computer
 

@@ -2397,7 +2397,6 @@
     .pnN-bar{overflow:hidden;justify-content:flex-end} .pnN-bar>*{flex:none}   /* sliding: the toggle stays at the right edge */
     /* a second line only while questions are open; the last answer folds it away */
     .pnN-bar.pn-questions{height:102px;padding-bottom:42px}
-    .pn-questions:is([data-st=received],[data-st=updating]){height:116px;padding-bottom:56px}
     .pnN-bar .ttl{font:600 16px/1.4 var(--pn-ui);white-space:nowrap} .pnN-bar .sp{flex:1}
     .pnN-bar .ttl[data-round-date]{cursor:pointer;border-radius:4px}
     .pnN-bar .ttl[data-round-date]:focus-visible{outline:2px solid currentColor;outline-offset:2px}
@@ -2992,7 +2991,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.147.7', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.147.8', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -4769,10 +4768,9 @@
   // the cursor clicks where the state's word is, and parks beside the state while the agent works (the user, asked
   // whether it should stay parked beside Updating instead of flying off: "yes"), in the bar's top row, clear of Round N,
   // the word and the Open questions row's buttons. Since 1.143.0 the state sits halfway to the Notes toggle, so the cursor
-  // points up at the spinner from just under it: right of the state it would cover the toggle
+  // points at the spinner's centre, keeping its attached name above the thread controls without growing the bar
   const stWord = (cur) => spot(cur, () => rcv.querySelector('.pnN-sw') || rcv, 0.45, 0.55);
-  const parkAt = (cur) => spot(cur, () => rcv, 1, 1);
-  const parkSpot = (cur) => { const at = parkAt(cur); return () => { const p = at(); return { x: p.x - 9, y: p.y + 3 }; }; };
+  const parkSpot = (cur) => spot(cur, () => rcv.querySelector('.pnN-spin') || rcv, 0.5, 0.5);
   let parkC = null;   // the cursor parked beside Updating
   // it's parked whenever the bar reads Updating with the column open, the cursor not busy elsewhere: on a reload too,
   // where it's simply there. Updating over (Unlock, a new copy, 30 minutes): it flies off; the column shut: it goes
