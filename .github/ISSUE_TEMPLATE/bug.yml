@@ -1,0 +1,37 @@
+name: Report a problem
+description: Something in human-feedback didn't work as expected.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown in the About card (open it from the tool's mark at the top of the Outline).
+      placeholder: "1.136.0"
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Which agent made the page?
+      options:
+        - Claude Code (terminal)
+        - Claude desktop app, Code tab
+        - Codex CLI
+        - ChatGPT desktop app, Codex mode
+        - Something else
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and operating system
+      placeholder: "Chrome 142 on macOS 26"
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: A screenshot helps. Please leave out anything private from your pages.

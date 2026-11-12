@@ -1,0 +1,50 @@
+# Secrets & local config
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.*
+**/credentials*
+**/secrets*
+**/*token*
+**/*api_key*
+*.pem
+*.key
+*.p12
+
+# Dev caches & artifacts
+.DS_Store
+._*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+node_modules/
+.venv/
+*.log
+*.swp
+*~
+*.bak
+
+# Editor / IDE
+.idea/
+.vscode/
+.cursor/
+
+# Obsidian
+.obsidian/
+*.canvas
+
+# Claude Code internals
+.claude/
+.superpowers/
+
+# Archive convention
+_archive/
+archive/
+
+# Marked-private
+**/PRIVATE/
+**/INTERNAL/
+**/*.private.*
