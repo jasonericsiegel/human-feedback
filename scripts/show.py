@@ -54,6 +54,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import time
 import webbrowser
 import urllib.error
 import urllib.request
@@ -69,6 +70,7 @@ import site_map  # noqa: E402  pylint: disable=wrong-import-position
 DEFAULT_BROWSER = "Google Chrome"
 BROWSER_ENV = "HUMAN_FEEDBACK_BROWSER"
 TIMEOUT = 20          # seconds for one AppleScript call or `open`
+STRAY_WAIT = 20       # seconds to wait for an agent's copy of the browser to quit before working around it
 PAGE_SUFFIXES = (".html", ".htm", ".xhtml")
 CHECK_TIMEOUT = 8     # seconds for the check that a web address loads
 GONE = (404, 410)     # statuses that mean the address is wrong; anything else (a login, a 500) still opens
@@ -350,6 +352,27 @@ def hand_over(browser: str, url: str, found: list[dict], front: bool = False) ->
     return 0
 
 
+def settle(browser: str) -> list[dict]:
+    """The agent copies of the browser still running after waiting up to STRAY_WAIT seconds for them to quit."""
+    agents = strays(browser)
+    waited = 0
+    while agents and waited < STRAY_WAIT:
+        time.sleep(1)
+        waited += 1
+        agents = strays(browser)
+    return agents
+
+
+def stay_out(browser: str, url: str, found: list[dict]) -> int:
+    """With the user in the browser and an agent's copy running, any way of opening the page that skips AppleScript
+    makes it the active tab, moving the user off the tab they're on. Leave their tabs alone and say where it is."""
+    others = ", ".join(f"pid {i['pid']}" for i in found)
+    print(f"human-feedback: not opened: another copy of {browser} is running for an agent ({others}), and you're in "
+          f"{browser}, so opening it now would make it the active tab under you. Open it yourself, or show it again "
+          f"once that copy quits: {url}", file=sys.stderr)
+    return 1
+
+
 def launch(browser: str, target: str, said: str, front: bool = False) -> int:
     """`open -g -a <browser> <target>`: shows the page without bringing the browser forward; with front, plain
     `open -a`, which brings it forward."""
@@ -621,8 +644,10 @@ def show_in(browser: str, page: str, url: str, want: str, others: set[str],  # p
         return launch_default(url, front)
     plain = urlsplit(page).scheme not in ("http", "https", "file")
     target = want if plain else url          # `open` takes a path more reliably than a file URL
-    agents = strays(browser)
+    agents = settle(browser)
     if agents:
+        if not front and frontmost_app() == browser:
+            return stay_out(browser, url, agents)
         return hand_over(browser, url, agents, front)
     got = listing(browser) if running(browser) else "not running"
     if got == "not running":

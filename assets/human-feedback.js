@@ -376,6 +376,14 @@
   const SK = V ? versionSentKey(LIST[V.last]) : ownSentKey;
   const readSent = (raw) => { let s = null; try { s = JSON.parse(raw); } catch (e) { /* bad record */ } s = s && typeof s === 'object' ? s : {}; if (!Array.isArray(s.copies)) s.copies = []; if (s.at && s.got == null) s.got = s.to; return s; };   // got: the copy the last receipt covered
   let sent = {}; try { sent = readSent(localStorage.getItem(SK)); } catch (e) { sent = readSent(null); }
+  function messageRecord(index = V?.cur) {
+    if (!V || index === V.last) return sent;
+    let record = {}; try {
+      record = readSent(localStorage.getItem(versionSentKey(LIST[index])));
+      if (!record.got && index === 0) record = readSent(localStorage.getItem(SENT_KEY + LIST[index].page + '#' + (LIST[index].round || 1)));
+    } catch (e) { /* storage blocked */ }
+    return record;
+  }
   const keepSent = () => { try { localStorage.setItem(SK, JSON.stringify(sent)); } catch (e) { /* storage blocked */ } };
   let all = false;   // true while Copy again writes its text: nothing counts as sent
   const sentOn = () => !!sent.to && !sent.unlocked && !all;
@@ -393,9 +401,24 @@
     const c = sent.copies.filter((x) => x.t <= t).pop(); if (!c) return;   // no copy this round before it
     const relock = !sentOn();
     if (relock || (sent.to || 0) < c.t) Object.assign(sent, { to: Math.max(sent.to || 0, c.t), ov: (sent.to || 0) < c.t ? c.ov : sent.ov });
-    Object.assign(sent, { at: t, got: c.t, unlocked: false }); keepSent();
+    if (!PAST) dateReceipts(sent.at, sent.got);   // migrate the receipt already known before a later paste arrives
+    Object.assign(sent, { at: t, got: c.t, unlocked: false });
+    if (!PAST) dateReceipts(t, c.t); keepSent();
     window.PN?.onSent?.(relock ? 'relock' : 'rcv');
   }
+  // Keep the first acknowledged paste on the message itself; later copies never move older messages to a new day.
+  function dateReceipts(at, to) {
+    if (!at || !to) return;
+    [...state.notes, ...Object.values(state.answers || {})].forEach((n) => {
+      const edited = n.edited || n.at || n.created;
+      if (edited && edited <= to) {
+        if (!n.receivedAt || (n.receivedFor && n.receivedFor !== edited)) n.receivedAt = at;
+        n.receivedFor = edited;
+      }
+    });
+    save();
+  }
+  dateReceipts(messageRecord().at, messageRecord().got);
   window.PN_RECEIVED = received;
   // a script beside the page, so it loads from file:// with no server
   const RECEIPT = '.' + (decodeURIComponent(location.pathname.split('/').pop()) || 'index.html') + '.received.js';
@@ -414,7 +437,7 @@
   if (waiting()) wait(); else if (sent.copies.length) checkReceipt();   // reopened while a copy still waits, it keeps looking
   document.addEventListener('visibilitychange', () => { if (!document.hidden) wait(); });
   // another tab of the page took a receipt, copied or unlocked: follow it
-  addEventListener('storage', (e) => { if (e.key === SK && e.newValue) { sent = readSent(e.newValue); window.PN?.onSent?.(false); wait(); } });
+  addEventListener('storage', (e) => { if (e.key === SK && e.newValue) { sent = readSent(e.newValue); if (!PAST) dateReceipts(sent.at, sent.got); window.PN?.onSent?.(false); wait(); } });
 
   // ---------- edits: the user rewrites a line or paragraph themselves, through Edit in the selection pill; the agent never marks
   // text for the user to fill in (the user: "the agent should only be allowed to ask questions"). Changed text is kept and copied ----------
@@ -432,6 +455,12 @@
   // the agent's replies to the user's notes ([{id, block, quote, said, text}], add_notes.py --reply) are shown and answered like
   // its questions, with the user's note's words above the reply
   ASKS = [...ASKS, ...tagList('replies').map((r, i) => ({ ...r, id: String(r.id || 'r' + i), said: String(r.said || ''), reply: true }))];
+  // what changed or was added since the user's notes ([{id, block, quote, text, added?}], add_notes.py --updated/--added):
+  // each one a thread with New for an added part (before Updated), otherwise Updated, open until the user responds (any reaction
+  // will do), so Copy's reminder catches one the user passed over. They ask for no answer and are never carried: one the user
+  // leaves goes with its round (the user: "if they don't acknowledge though, the pointers don't persist to the following round";
+  // "as threads"; "let's call it 'Updated'")
+  ASKS = [...ASKS, ...tagList('updated').map((u, i) => ({ ...u, id: String(u.id || 'u' + i), upd: true }))];
   // --done closes the user's note where the user wrote it. Each version's done list travels in data-versions, so an earlier page
   // can put the check on its own note; no done mark becomes a thread in the new round.
   const ASKS_OPEN = !V || V.cur === V.last;   // an earlier version's questions were an earlier round's: shown, closed
@@ -455,7 +484,7 @@
   // Reply box. What counts open threads uses this, so a thread stays open while the user types and its count steps down once, as
   // the user's reply lands (the user: "it said "1 of 4", and now that i'm replying it says 3. this is all very confusing")
   const replied = (x) => !!(x && (repliesOf(x).length || REACT[x.react] || x.files?.length));   // visible committed responses close their thread regardless of their saved timestamp
-  const answerOf = (a) => (state.answers[a.id] ||= { id: 'q:' + a.id, q: a.text, block: a.block, quote: a.quote, ...(a.reply ? { reply: true, said: a.said } : {}), a: '', at: Date.now(), created: Date.now() });
+  const answerOf = (a) => (state.answers[a.id] ||= { id: 'q:' + a.id, q: a.text, block: a.block, quote: a.quote, ...(a.reply ? { reply: true, said: a.said } : {}), ...(a.upd ? { upd: true } : {}), a: '', at: Date.now(), created: Date.now() });
   // ---------- carried: the agent's questions and replies from earlier rounds ([{id, kind, from, block, quote, said, text}],
   // add_notes.py's data-carry) ride into every new version, so one the user never answered can't drop out because the agent
   // didn't pass it again (the user: "I missed a bunch of your open threads from version two, so you can bring them back so I
@@ -467,7 +496,7 @@
   function pastStores() {
     const keys = V ? LIST.flatMap((v, i) => Array.from({ length: +v.round || 1 }, (_, r) => ['human-feedback:' + v.page + '#' + (r + 1), i + 1]))
       : Array.from({ length: Math.max(0, (+script.dataset.round || 1) - 1) }, (_, r) => ['human-feedback:' + (script.dataset.key || PAGE) + '#' + (r + 1), r + 1]);
-    return keys.filter(([k]) => k !== KEY).map(([k, round]) => { try { return { ...(JSON.parse(localStorage.getItem(k)) || {}), round }; } catch (e) { return { round }; } });   // round: where a thread's `from` can be matched
+    return keys.filter(([k]) => k !== KEY).map(([k, round]) => { try { return { ...(JSON.parse(localStorage.getItem(k)) || {}), round, storeKey:k }; } catch (e) { return { round }; } });   // round: where a thread's `from` can be matched
   }
   // ---------- closed by the user's notes: a question can be answered without a word in its own thread (the user, on "How full
   // should a normal day be?", with a 👍 and a 👎 on the options under it: "i answered this implicitly below ... it's considered
@@ -492,7 +521,7 @@
     const have = new Set(ASKS.map((a) => a.id)), past = ASKS_OPEN ? pastStores() : [];
     const kept = CARRY.filter((c) => c && typeof c === 'object' && c.id && c.text && !have.has(String(c.id)) && have.add(String(c.id)))
       .filter((c) => (ASKS_OPEN ? !past.some((s) => gave((s.answers || {})[c.id]) || (s.round >= (+c.from || 0) && closedByNotes({ ...c, reply: c.kind === 'reply' }, s.notes))) : gave(state.answers[c.id])))
-      .map((c) => ({ id: String(c.id), block: c.block, quote: c.quote, text: String(c.text), from: +c.from || 0, carried: true, ...(c.kind === 'reply' ? { reply: true, said: String(c.said || ''), gist: c.gist } : {}) }));
+      .map((c) => ({ id: String(c.id), block: c.block, quote: c.quote, text: String(c.text), authoredAt: c.authoredAt, from: +c.from || 0, carried: true, ...(c.kind === 'reply' ? { reply: true, said: String(c.said || ''), gist: c.gist } : {}) }));
     kept.forEach((a) => tie(a.id));
     ASKS.push(...kept);
   }
@@ -505,7 +534,7 @@
     const id = String(x.id), a = ASKS.find((q) => q.id === id);
     if (a) { a.ew = String(x.answer).trim(); return; }
     if (!x.text) return;
-    ASKS.push({ id, block: x.block, quote: x.quote, text: String(x.text), ew: String(x.answer).trim(),
+    ASKS.push({ id, block: x.block, quote: x.quote, text: String(x.text), authoredAt: x.authoredAt, ew: String(x.answer).trim(),
       ...(+x.from ? { carried: true, from: +x.from } : {}), ...(x.kind === 'reply' ? { reply: true, said: String(x.said || ''), gist: x.gist } : {}) });
   });
   function replyDraft(a) {
@@ -1019,7 +1048,11 @@
   const TEXT_BLOCK = 'p,li,h1,h2,h3,h4,h5,h6,dt,dd,td,th,caption,figcaption,blockquote,pre';
   // words a selection can actually take in: a Range's toString counts a chart's unselectable labels, and Selection's doesn't,
   // so a triple-click that ran past such a chart looked as if it had reached more words (the user: "why does it say backlog work twice?")
-  const noSelect = (e) => { for (; e; e = e.parentElement) if (getComputedStyle(e).userSelect === 'none') return true; return false; };
+  // the nearest element that sets user-select decides: words the page made selectable again inside an unselectable parent
+  // (a swipe deck's card titles) count, or a triple-click on one trimmed itself to nothing and the pill showed at the
+  // window's top left (the user, 2026-11-14). Chrome passes the value down to every child, so its own value is the answer
+  // there; a browser that leaves the children at auto has the walk go on up
+  const noSelect = (e) => { for (; e; e = e.parentElement) { const u = getComputedStyle(e).userSelect; if (u && u !== 'auto') return u === 'none'; } return false; };
   const hasWords = (r) => {
     const root = r.commonAncestorContainer, walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = root.nodeType === 3 ? root : walk.nextNode(); n; n = walk.nextNode()) {
@@ -1034,7 +1067,7 @@
     const s = at(r.startContainer), e = at(r.endContainer), z = () => document.createRange();
     if (s && !s.contains(r.endContainer)) { const t = z(); t.setStart(s, s.childNodes.length); t.setEnd(r.endContainer, r.endOffset); if (!hasWords(t)) c.setEnd(s, s.childNodes.length); }
     if (e && !e.contains(r.startContainer)) { const h = z(); h.setStart(r.startContainer, r.startOffset); h.setEnd(e, 0); if (!hasWords(h)) c.setStart(e, 0); }
-    return c;
+    return c.collapsed ? r.cloneRange() : c;   // trimmed to nothing: keep what the user selected, which has a place on screen
   }
   // ---------- pictures: an image, drawing or video taken in by a selection is part of what the note is about (the user,
   // 2026-10-20: "comment or sticker images or image/text combos"). Each is kept by its place among its part's pictures and
@@ -1684,7 +1717,7 @@
     // an old reply to What changed (q:changed), kept in another version's store, stays out (what changed, above)
     const out = ASKS_OPEN ? ASKS.filter(answerable).map((a) => {
       const x = state.answers[a.id] || {}, ref = carriedRef(a);
-      return { block: a.block, quote: a.quote, q: a.text, reply: a.reply, said: a.said, rs: allReplies(x), react: x.react, big: x.big, files: x.files, at: x.at,
+      return { block: a.block, quote: a.quote, q: a.text, reply: a.reply, upd: a.upd, said: a.said, rs: allReplies(x), react: x.react, big: x.big, files: x.files, at: x.at,
         viaNotes: closedByNotes(a), ref, vi: ref && V && LIST[a.from - 1] ? a.from - 1 : null, localDraft: replyDraft(a) };
     }) : [];
     if (V) LIST.forEach((v, i) => { if (i !== V.cur) Object.values(storeOf(i).answers || {}).filter((x) => x.id !== 'q:changed' && answered(x)).forEach((x) => out.push({ ...x, rs: allReplies(x), ref: i === V.last ? '' : vref(i), vi: i === V.last ? null : i })); });
@@ -1701,11 +1734,15 @@
     const answerLines = (x, label) => [...(x.rs.length || REACT[x.react] ? answers(x).flatMap((t) => { const [first, ...rest] = t.split('\n'); return [`   ${label}${first}`, ...rest.map((l) => '   ' + l)]; }) : []),
       ...(x.files || []).map((f) => '   Image: ' + (f.path || '(not saved)'))];
     const given = (x) => x.rs.length || REACT[x.react] || x.files?.length;
-    const qs = all.filter((x) => !x.reply);
+    const qs = all.filter((x) => !x.reply && !x.upd);
     if (qs.length) out.push('', 'Your questions');
     qs.forEach((x, i) => out.push('', `Q${i + 1}. ` + where(x) + x.q, ...(given(x) ? answerLines(x, x.rs.length > 1 ? 'Answer: ' : '') : [x.viaNotes ? '   (answered by notes on this part)' : '   (no answer)'])));
     // the agent's replies to the user's notes: only the ones the user answered go back, since one left alone asks nothing of the agent
     const rs = all.filter((x) => x.reply && given(x)), one = (t) => clip(String(t || '').replace(/\s+/g, ' ').trim());
+    // what changed: like replies, only the ones the user responded to go back (a 👍 says they saw it; words may ask for more)
+    const us = all.filter((x) => x.upd && given(x));
+    if (us.length) out.push('', 'Your updates');
+    us.forEach((x, i) => out.push('', `U${i + 1}. ${where(x)}${x.q}`, ...answerLines(x, 'Answer: ')));
     if (rs.length) out.push('', 'Your replies');
     rs.forEach((x, i) => {
       out.push('', `R${i + 1}. ${where(x)}`.trimEnd(), ...(x.said ? [`   Note: ${one(x.said)}`] : []), `   You replied: ${one(x.q)}`, ...answerLines(x, 'Answer: '));
@@ -2205,13 +2242,39 @@
     @media (prefers-reduced-motion: reduce){mark.${P}mark{transition:none !important}}
   `);
 
+  const messageReceipt = (n, record = messageRecord()) => {
+    const event = n?.edited || n?.at || n?.created || Infinity;
+    return n?.receivedAt && (!n.receivedFor || n.receivedFor === event) ? n.receivedAt : event <= (record.got || 0) ? record.at || 0 : 0;
+  };
+  function sourceReceipt(a) {
+    // Copy normalizes paragraph whitespace in the source reference; the original note and displayed words stay intact.
+    const same = (n) => String(n.text || '').replace(/\s+/g, ' ').trim() === String(a.said || '').replace(/\s+/g, ' ').trim()
+      && (n.block || '') === (a.block || '') && squashed(n.quote) === squashed(a.quote);
+    const ownNote = state.notes.find(same); if (ownNote) return messageReceipt(ownNote);
+    if (V) for (let i = V.cur; i >= 0; i--) {
+      const n = storeOf(i).notes.find(same); if (!n) continue;
+      return messageReceipt(n, messageRecord(i));
+    }
+    for (const old of pastStores()) {
+      const n = (old.notes || []).find(same); if (!n) continue;
+      const raw = old.storeKey.slice('human-feedback:'.length), hash = raw.lastIndexOf('#');
+      const page = raw.slice(0, hash), round = raw.slice(hash + 1);
+      let record = {}; try {
+        record = readSent(localStorage.getItem(SENT_KEY + (V ? LIST[0].page + '@' : '') + page + '#' + round));
+        if (!record.got) record = readSent(localStorage.getItem(SENT_KEY + raw));
+      } catch (e) { /* storage blocked */ }
+      return messageReceipt(n, record);
+    }
+    return 0;   // no reliable user receipt survives: omit its date rather than imply a receipt
+  }
+
   window.PN = { PAGE, state, save, addHl, removeHl, restoreHl, hlIn, icon, brandIcon, esc, el, css, art, pathsOf, newId, blocks, blockEl, blockOf, blockLabel, anchorFromSelection, applyMarks, marksOf, unlight, midOf, posAt,
     UI, toFrame, frameAt, sorted, serialize, copyText, copy, count, feedbackCount, grow, copyButton, selectionPill, initEdits, edited, editEl, editParts, revertEdit: (label) => { finishFrameEdit(); revertEdit(label); }, openEdit: (...args) => { finishFrameEdit(); openEdit(...args); },
     closeEdit, editBlockAt, spanHead, editHist, undoKey,
     editIsOpen, editFresh, editStepAt, frameEditRef, frameEditNode, frameEditLabel, frameRef, frameFor, frameSender, connectFrame, openFrameEdit, finishFrameEdit, keepFrameEdit, editPart, editHome, shownText, originals, noteDone, REACT, has, live, sticker, stick, V, pastOverall, editLocked, ASKS, ASKS_OPEN, fromRound, answerable, answerOf, answered, replied, repliesOf, setReplies, holdToGrow, reactButtons,
-    sentOn, rcvdOn, gotIt, sentAt: () => sent.at, gotAll: () => (sent.got || 0) >= (sent.to || 0), ovSent, answerSent, unlock, PAST, locked: (n) => PAST || (n.created || 0) < ROUND_START || wasSent(n.edited || n.created),
+    messageReceipt, sourceReceipt, sentOn, rcvdOn, gotIt, sentAt: () => sent.at, gotAll: () => (sent.got || 0) >= (sent.to || 0), ovSent, answerSent, unlock, PAST, locked: (n) => PAST || (n.created || 0) < ROUND_START || wasSent(n.edited || n.created),
     keepFiles, ovFiles, keepOvFiles, saveWaiting, begin, saveTimes, isSaving: (f) => saving.has(f), waitingFiles, sideNeeds, canSide, savable: (f) => !!f.wait && unsaved.has(f.wait), fileSent: (f) => wasSent(f.at), ROUND: +script.dataset.round || 1,
-    ROUND_AT: Date.parse(LIST[CUR]?.at || '') || Date.parse(LIST[CUR]?.made || ''),
+    ROUND_AT: Date.parse(script.dataset.at || '') || Date.parse(LIST[CUR]?.at || '') || Date.parse(LIST[CUR]?.made || ''),
     MADE: Date.parse(script.dataset.made || '') || 0,   // when add_notes.py last wrote the tag
     LISTED, PICTURES, COUNT_PAGE: LISTED ? LIST[0].page : PAGE,
     AGENT: (script.dataset.agent || '').trim(),   // the agent that tagged the page, as it named itself (add_notes.py --agent)
@@ -2289,20 +2352,17 @@
     .pnL-rail .pnO{width:${RAIL}px}
     .pnO .hd{flex:none;display:flex;align-items:center;gap:4px;height:60px;padding:0 8px 0 20px;border-bottom:1px solid var(--pn-hair);background:#e9e9ec}
     :root:where(.pn-dark):not([data-theme="light"]) .pnO .hd{background:#171719}
-    /* the tool's name heads the Outline, beside the mark, and opens the same About card the mark does (1.96.0; the user: "that
-       title shouldn't even be there with the tooltip, it should just say 'human-feedback' and it should have the same tooltip
-       as the icon hover"). The page's title had sat here since 1.85.0, cut to one line with its whole self in a tooltip */
-    /* Editorial wordmark chosen 2026-11-11: the slash is part of the visible name; the marker keeps its graphite face. */
+    /* The tool name heads the Outline and opens About. The document title stays in the page. */
+    /* The slash is part of the editorial wordmark. */
     .pnO-about{display:flex;align-items:center;gap:11px;flex:1;min-width:0;min-height:44px;margin:0;padding:0;border:0;
       background:none;cursor:pointer;color:var(--pn-ink);text-align:left}
-    .pnO-about .ttl{min-width:0;font:500 21.5px/1.15 Georgia,"Times New Roman",serif;letter-spacing:-1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .pnO-about .ttl{min-width:0;font:500 21.5px/1.15 Georgia,"Times New Roman",serif;letter-spacing:-.7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .pnO .hd .tg{flex:none;width:32px;height:36px;margin-left:auto}
     .pnO-about:hover .ttl{color:var(--pn-ink2)} .pnO-about:focus-visible{outline:2px solid var(--pn-ink2);outline-offset:-2px}
-    /* the tool's mark, as on the tab: on every page, before human-feedback (the user's pick, A + C). Hugeicons HighlighterIcon with its tip filled since 1.96.0
-       (the user: "change the icon for human-feedback to Hugeicons HighlighterIcon and fill the tip"); Edit02Icon until then */
-    .pnO-mk{flex:none;display:grid;place-items:center;width:24px;height:24px;margin-right:0;border-radius:5.5px} .pnO-mk .pn-brand{display:block;width:100%;height:100%}
+    /* The Outline icon is hidden; its geometry remains available to the tab icon. */
+    .pnO-mk{flex:none;display:none;place-items:center;width:24px;height:24px;margin-right:0;border-radius:5.5px} .pnO-mk .pn-brand{display:block;width:100%;height:100%}
     .pnL-rail .pnO-about{display:none}
-    /* about: the mark opens a card on who made the tool and how to reach them, on hover or a click (the user's pick, F6) */
+    /* About opens from the wordmark on hover, click, or keyboard activation. */
     .pnO-mk{transition:box-shadow .15s} .pnO-about[aria-expanded=true] .pnO-mk{box-shadow:0 0 0 3px var(--pn-hair2)}
     .pnA{position:fixed;z-index:2147482100;width:316px;box-sizing:border-box;padding:16px 8px 8px;border-radius:var(--pn-R2);background:var(--pn-white);
       border:1px solid var(--pn-hair);box-shadow:0 12px 32px rgba(0,0,0,.14);opacity:0;visibility:hidden;transform:translateY(-4px);
@@ -2369,17 +2429,17 @@
     .pnO .pn-cap:hover{background:var(--pn-hov)}
     .pnO .pn-cap,.pnO .r .nm>span,.pnO .r .nm::after{overflow-wrap:anywhere}   /* one long word breaks rather than push the column sideways, however deep its row */
     .pnO .pn-cap.pnO-sub{margin-top:4px;padding-top:6px;padding-bottom:6px;font-size:13.5px}   /* a caption inside a tab or section: still a heading, one step down */
-    .pnO .r{display:flex;align-items:flex-start;gap:10px;width:100%;min-height:34px;margin:0;padding:8px 16px 8px 20px;border:0;background:none;text-align:left;font:13.5px/1.35 var(--pn-ui);color:var(--pn-ink2);cursor:pointer}
+    .pnO .r{display:flex;align-items:center;gap:10px;width:100%;min-height:34px;margin:0;padding:8px 16px 8px 20px;border:0;background:none;text-align:left;font:13.5px/1.35 var(--pn-ui);color:var(--pn-ink2);cursor:pointer}
     .pnO .r:hover{background:var(--pn-hov)}
     .pnO .r:not(.pnO-sub){font-weight:500;color:var(--pn-ink)}
     /* prefixed: a page's own .sub rule (a subtitle's 24px margin) spread the nested rows apart */
-    .pnO .r.pnO-sub{font-size:13px;min-height:30px;padding-top:6px;padding-bottom:6px}
+    .pnO .r.pnO-sub{font-size:13px;min-height:34px;padding-top:8px;padding-bottom:8px}
     .pnO .r.here{color:var(--pn-ink);font-weight:600;box-shadow:inset 3px 0 0 var(--pn-ink)}
     .pnO .r .nm{flex:1;min-width:0;display:grid}
     .pnO .r .nm::after{content:attr(data-t);font-weight:600;visibility:hidden;grid-area:1/1}   /* bold text's size held, so the row in view never rewraps */
     .pnO .r .nm>span{grid-area:1/1}
     /* "badges should awyas be the same size": the number overlays the circle, through 999, without widening it. */
-    .pnO .r .qd{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;box-sizing:border-box;margin-top:-2px;border-radius:50%;font:600 12px/22px var(--pn-ui);font-variant-numeric:tabular-nums;
+    .pnO .r .qd{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;box-sizing:border-box;margin-top:0;border-radius:50%;font:600 12px/22px var(--pn-ui);font-variant-numeric:tabular-nums;
       background:var(--pn-ink);color:var(--pn-white);transition:filter .15s}
     .pnO .r .qd>.pn-total-number,.pn-total-badge>.pn-total-number{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
     .pnO .r .qd.pn-three{font-size:10px}
@@ -2427,6 +2487,10 @@
     .pnR-open .pnN-bar:has(>.pnV):not(:has(.latest)) > .rcv{translate:.5px 0}
     .pnN-bar > .pnV-act > .pnRp{margin:0}
     .pnN-bar:is([data-st=copied],[data-st=received],[data-st=updating],[data-st=done]) > .pnV-act,.pnN-bar.pn-done > .pnV-act{visibility:hidden}
+    /* under Done, Replay comes back, at the end of the middle cell, with Done in its centre (the user, 2026-11-20: "i needs a
+       replay button like previous rounds"; through 1.153.7 Done dropped it: "when done i don't think we need a replay") */
+    .pnR-open .pnN-bar.pn-done:has(>.pnV) > .pnV-act:has(>.pnRp){visibility:visible;justify-self:end;translate:none}
+    .pnR-open .pnN-bar.pn-done:has(>.pnV):has(>.pnV-act>.pnRp) > .rcv{translate:-14px 0}   /* Done steps left so the two never touch */
     .pnN-bar:is([data-st=received],[data-st=updating],[data-st=done]) :is(.pnV,.pnV-act)>.pn-icb{color:inherit}
     .pnN-bar:is([data-st=received],[data-st=updating],[data-st=done]) :is(.pnV,.pnV-act)>.pn-icb:hover:not(:disabled){background:color-mix(in srgb,currentColor 14%,transparent)}
     .pnN-bar > .pnV-act:empty{display:none}
@@ -2526,8 +2590,8 @@
     .pnN-done{position:fixed;right:0;top:102px;bottom:0;width:${R + 1}px;box-sizing:border-box;z-index:2147481900;overflow-y:auto;overscroll-behavior:contain;
       padding:24px 20px 28px;background:var(--pn-side);border-left:1px solid var(--pn-hair);display:none;scrollbar-width:thin;font:400 15px/1.55 var(--pn-ui);color:var(--pn-text)}
     .pn-done .pnN-done{display:block} .pnR-rail .pnN-done{display:none}
-    /* under Done the threads are covered and none should be open, so the Open questions row would have no job: the
-       bar goes back to one line and the summary starts under it; Unlock restores any open questions */
+    /* under Done the threads are read-only, listed under the summary, so the Open questions row would have no job: the
+       bar goes back to one line and the summary starts under it; Unlock restores any open questions and their Reply boxes */
     .pn-done.pnR-open .pnN-bar{height:102px;padding-bottom:42px} .pn-done.pnR-open .pnN-done{top:102px}
     .pn-done.pnR-open .pnN-links{display:none} .pn-done .pnN-ov .pnF-at{display:none}
     /* under Done the Overall box goes but for Copy and Unlock, and the summary runs down to them (the user: "the 'Overall
@@ -2536,7 +2600,15 @@
     .pn-done .pnN-ov>:not(.row){display:none} .pn-done .pnN-ov .row{margin-top:0}
     /* Copy does nothing under Done, so it goes and Unlock stands alone across the row */
     .pn-done .pnN-ov .row>.pn-btn.pri{display:none} .pn-done .pnN-ov .row>.pn-btn.un.on{flex:1 1 auto;max-width:100%;margin-left:0}
-    .pn-done.pnR-open .pnN-row{visibility:hidden}   /* under the summary, rows don't draw: a row's sticker hung past the column's edge, beside it (the user: "fix the overlay bug that happens when the done sweep happens") */
+    /* under Done the summary heads the notes column and every thread of the round follows it, in page order, in one list
+       that scrolls between the bar and Unlock (the user: "what if we just put the threads underneath the what we did/final
+       file/next steps and don't really change the ui/ux other than that?"; "just remove the 'threads this round'"). Before
+       1.148.0 the summary covered the column, and the round's last replies and questions went unseen under it */
+    .pn-done.pnR-open .pnN{position:fixed;top:102px;bottom:var(--pn-foot,0px);height:auto!important;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;
+      display:flex;flex-direction:column;transform:none!important;clip-path:none!important}
+    .pn-done.pnR-open .pnN>.pnN-done{position:static;flex:none;width:auto;border-left:0;overflow:visible;z-index:auto}   /* a flex item keeps its z-index though static: the sheet's own one painted it over the threads as they slid down through it (2026-11-19) */
+    .pn-done.pnR-open .pnN-row{position:relative!important;top:auto!important;right:auto!important;width:auto!important;min-height:0!important;flex:none;transform:none!important;clip-path:none!important}
+    .pn-done.pnR-open .pnN-mk{display:none}   /* under the summary, rows don't draw: a row's sticker hung past the column's edge, beside it (the user: "fix the overlay bug that happens when the done sweep happens") */
     .pnN-done .pnD-mt{font-size:13px;color:var(--pn-muted);margin:0 0 10px;font-variant-numeric:tabular-nums}
     .pnN-done .pnD-g{margin:0 0 24px} .pnN-done .pnD-g+.pnD-g{border-top:1px solid var(--pn-hair);padding-top:22px}
     .pnN-done h2{display:flex;align-items:center;gap:8px;font:600 15px/1.4 var(--pn-ui);color:var(--pn-ink);margin:0 0 9px}
@@ -2550,6 +2622,16 @@
     .pnN-done>:last-child{margin-bottom:0}
     .pnN-done.in{animation:pnDnRise .32s cubic-bezier(.2,.7,.3,1) ${Math.round(GROUND * 0.4)}ms both}
     .pnN-done.out{display:block;animation:pnDnOut .2s ease both} .pnR-rail .pnN-done.out{display:none}   /* Unlock: the summary leaves */
+    /* Done clicked in with the column open (2026-11-19): the round's threads slide down to their places under the summary, and
+       the cursor types each section in as it types a message, a one-line bubble with three dots that grows into the section
+       (the user: "the thread should slide down ... and then the agent should do the whole typing thing for what we did").
+       A section still to type keeps its space but shows nothing (wait); one being typed shows only its bubble (ty) */
+    .pnN-done .pnD-g{position:relative} .pnN-done .pnD-g.wait{visibility:hidden} .pnN-done .pnD-g.ty>:not(.pnD-tb){visibility:hidden}
+    .pnN-done .pnD-tb{position:absolute;left:0;display:block;width:fit-content;box-sizing:border-box;background:var(--pn-bub);color:var(--pn-ink);font-size:14.5px;line-height:1.45;
+      padding:8px 12px 9px;border-radius:var(--pn-R2);border-top-left-radius:var(--pn-R0);pointer-events:none}
+    .pnN-done .pnD-tb .td{display:inline-flex;align-items:center;gap:5px;height:21px;vertical-align:top}
+    .pnN-done .pnD-tb .td i{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.28;animation:pnDots 1.2s ease-in-out infinite;animation-delay:var(--pn-ph,0ms)}
+    .pnN-done .pnD-tb .td i+i{animation-delay:calc(var(--pn-ph,0ms) + .15s)} .pnN-done .pnD-tb .td i+i+i{animation-delay:calc(var(--pn-ph,0ms) + .3s)}
     @keyframes pnDnOut{to{opacity:0}}
     @keyframes pnDnRise{from{opacity:0;transform:translateY(8px)}}
     @media (prefers-reduced-motion: reduce){.pnN-done.in{animation:none}}
@@ -2569,19 +2651,16 @@
     /* bottom right: the Overall note and Copy, always on screen */
     .pnN-ov{position:fixed;right:0;bottom:0;box-sizing:border-box;width:${R + 1}px;z-index:2147482000;padding:14px 20px 16px;
       background:color-mix(in srgb,var(--pn-side) 92%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-left:1px solid var(--pn-hair);border-top:1px solid var(--pn-hair)}
-    .pnN-ov .pn-ta{min-height:calc(2 * 1.45em + 20px);max-height:30vh;overflow-y:auto;scrollbar-width:none} .pnN-ov .pn-ta::-webkit-scrollbar{display:none}
+    .pnN-ov .pn-ta{min-height:calc(2 * 1.45em + 20px);max-height:min(30vh,calc(5 * 1.45em + 20px));overflow-y:auto;scrollbar-width:none} .pnN-ov .pn-ta::-webkit-scrollbar{display:none}
     .pnN-ov .row{display:flex;margin-top:12px}
     .pnN-ov .row .pn-btn{width:100%;height:46px;gap:8px;padding:0 12px 0 10px;border-radius:var(--pn-R1);font:600 15px/1 var(--pn-ui)}   /* near-black from .pri; inverts in dark mode */
     .pnN-row .lbl{font-size:12px;font-weight:600;color:var(--pn-muted)}
     /* a link in an agent's words to a part of the page (add_notes.py [[Part label]]): italic, so it reads as a section's name, with the
-       outline's soft blue underline. Back to thread is a plain button (the user: "it's clear it's a section. like put it in italics.
+       outline's soft blue underline (the user: "it's clear it's a section. like put it in italics.
        stop adding new weird stylings like the black underline, we need to be consistent throughout human-feedback") */
     .pn-go{--pn-ln:#a9c1e6;all:unset;font-style:italic;cursor:pointer;text-decoration:underline 1px var(--pn-ln);text-underline-offset:3px}
     .pn-go:focus-visible{outline:2px solid var(--pn-me);outline-offset:2px}
     @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .pn-go{--pn-ln:#4a6a9c}}
-    .pnN-ov>.pn-btn.pn-bk{width:100%;margin:0 0 12px}
-    .pn-done .pnN-ov>.pn-btn.pn-bk:not([hidden]){display:flex}
-    .pn-btn.pn-bk[hidden]{display:none}
     .pnN-ov .lbl{font:600 15px/1.4 var(--pn-ui);color:var(--pn-ink);margin-bottom:9px}   /* a section heading, like What we did */
     /* sent: Copy again in grey, Unlock sliding in beside it */
     .pnN-ov .row>.pn-btn.pri{flex:1 1 auto;width:auto;transition:background .2s ease,color .2s ease,border-color .2s ease}
@@ -2618,14 +2697,15 @@
     .pnN-ov{clip-path:inset(0 0 0 0);transition:clip-path .28s ease,opacity .2s ease .06s,visibility 0s}   /* slides with the column */
     .pnR-rail .pnN-ov{clip-path:inset(0 0 0 100%);transition:clip-path .28s ease,opacity .14s ease,visibility 0s .28s}
     .pnN-row.pin{position:fixed}   /* an Overall question held under the bar while the page scrolls (layout's pin) */
-    .pnN-row{position:absolute;right:0;width:${R}px;box-sizing:border-box;padding:12px 16px 10px 20px;border-top:1px solid var(--pn-hair);border-bottom:1px solid var(--pn-hair);cursor:pointer;transition:background .15s,opacity .2s ease .06s,visibility 0s}
+    .pnN-row{position:absolute;right:0;width:${R}px;box-sizing:border-box;padding:12px 16px 10px;border-top:1px solid var(--pn-hair);border-bottom:1px solid var(--pn-hair);cursor:pointer;transition:background .15s,opacity .2s ease .06s,visibility 0s}
     .pnN-row:hover{background:color-mix(in srgb,var(--pn-white) 55%,transparent)}
     .pnN-row.sel{background:var(--pn-sel);z-index:1}
     /* the writing app's focus: with a row selected, the others' content dims slightly and hover restores it, so the white
        band stands out on a column only a shade darker (the user: "easier to see which box is selected"). Hairlines stay full */
     .pnN-row>*{transition:opacity .15s}
-    .pn-thread-position{margin:0 0 6px;color:var(--pn-muted);font:600 13px/18px var(--pn-ui);font-variant-numeric:tabular-nums}
-    .pnN:has(.pnN-row.sel) .pnN-row:not(.sel):not(.ew-sel):not(:hover)>:not(.pn-thread-position){opacity:.62}
+    .pn-thread-position{display:inline-flex;align-items:center;vertical-align:middle;position:static;min-height:18px;padding-right:0;margin:0 8px 6px 0;color:var(--pn-muted);font:600 13px/18px var(--pn-ui);font-variant-numeric:tabular-nums}
+    .pnN:has(.pnN-row.sel) .pnN-row:not(.sel):not(.ew-sel):not(:hover):not(:has(.ib.rx.open))>:not(.pn-thread-position):not(.pn-day):not(.qb){opacity:.62}
+    .pnN:has(.pnN-row.sel) .pnN-row:not(.sel):not(.ew-sel):not(:hover):not(:has(.ib.rx.open))>.qb{opacity:.92}
     /* the writing app's folded rows: a row not selected keeps its label line, where it ties to the page, and one line each of
        quote and words, so many notes fit beside the text they're about; selecting one unfolds it */
     .pnN-row:not(.ask) .h{margin-bottom:2px}   /* the quote stays put as a row folds and unfolds */
@@ -2689,7 +2769,7 @@
     /* Pin content reactions to the callout's bottom right, with the same overhang as a message bubble.
        Keep room for the held size even before reacting, so the quote and comment don't move. */
     .pnN-row .pn-note-target{display:flex;align-items:center;gap:8px;border-inline-start:3px solid #ecc23e;padding-inline:10px 20px;margin-block-end:6px}
-    .pn-note-target:has(>.pn-note-rx){position:relative;min-block-size:38px;padding-right:42px;margin-right:8px;margin-block-end:24px}
+    .pn-note-target:has(>.pn-note-rx){position:relative;min-block-size:38px;padding-right:42px;margin-right:14.5px;margin-block-end:24px}
     .pnN-row.bare .pn-note-target{margin-block-end:0}
     .pnN-row.dm .pn-note-target{border-color:var(--pn-hair2)}
     .pn-note-target .pn-note-content{flex:1;min-inline-size:0;overflow-wrap:anywhere}
@@ -2778,7 +2858,9 @@
        space between messages (the user: "when there's an emoji, the vertical spacing between each message changes to make room
        for the emoji, i don't think that's a best practice"); the user's replies in a row stay grouped 4 px apart */
     .pnN-row.ask .qb{margin-bottom:20px} .pnN-row.ask .qb::after{content:'';display:inline-block;width:15px}
-    .pnN-row.ask>.qb:has(+.pnF-box){margin-bottom:24px}
+    .pnN-row.ask>.qb:has(+.pnF-box){margin-bottom:18px}
+    .pnN-row.ask .qb{font-weight:400} .pnN-row.ask .qb.pn-question{font-weight:400}
+    .pnN-row.ask .qb.pn-question::after{font-size:0}   /* the no-break clearance adds no space glyph to a bold question's last line */
     .pnN-row.ask .qb:has(+.qb){margin-bottom:4px} .pnN-row.ask .qb:has(+.qb)::after{display:none} .pnN-row.ask .qb+.qb{border-top-left-radius:var(--pn-R2)}   /* "break things up into paragraphs" */
     .pnN-row.ask .b.re{margin-bottom:20px} .pnN-row.ask .b.re:has(+.b.re){margin-bottom:4px}
     /* always shown on an open thread, so the user can see reactions exist without pointing at the bubble (1.74.0) */
@@ -2948,7 +3030,9 @@
   document.head.appendChild(Object.assign(document.createElement('link'), { rel: 'icon', href: 'data:image/svg+xml,' + encodeURIComponent(brandIcon('hf-tab')) }));
   const out = el(`<nav class="pn-ui pnO"><div class="hd"><button type="button" class="pnO-about" aria-label="About human-feedback" aria-haspopup="dialog" aria-expanded="false"><span class="pnO-mk" aria-hidden="true">${brandIcon('hf-outline')}</span><span class="ttl">/human-feedback</span></button><button type="button" class="pn-icb tg"></button></div><div class="ol"></div></nav>`);
   WRAP.appendChild(out);
-  const APPEARANCE = document.currentScript.dataset.appearance;
+  // Auto, Light and Dark for the side columns on every page (the user, 2026-11-19: "I wanted that to be there all the time,
+  // not just when the page asks for it, because it would control the columns"); `--appearance off` still takes it away
+  const APPEARANCE = document.currentScript.dataset.appearance || 'sidebars';
   const HAS_APPEARANCE = APPEARANCE === 'sidebars' || APPEARANCE === 'page';
   const MODES = { auto: ['Auto', 'SunMoonIcon'], light: ['Light', 'Sun03Icon'], dark: ['Dark', 'Moon02Icon'] };
   // Chrome's local files can share a storage area. Use the first round's full path to separate reviews in different folders.
@@ -2991,7 +3075,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.147.8', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.153.8', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -3200,7 +3284,7 @@
     const parts = blocks(); const partEls = new Set(parts.map((p) => p.el)), labelAt = new Map(parts.map((p) => [p.el, p.label]));
     let caps = [];   // captions waiting for the part under them, which a jump to the caption marks
     // every row jumps to what it names: a caption to its heading, a part to the part
-    const jump = (n, label) => { showPart(n); pin = label; spy(); goTo(n.getBoundingClientRect().top + scrollY - topCover(n) - 24, label); const h = /^H\d$/.test(n.tagName) ? n : n.querySelector('h1,h2,h3,h4') || n; h.classList.remove(P + 'cue'); void h.offsetWidth; h.classList.add(P + 'cue'); };
+    const jump = (n, label) => { showPart(n); pin = label; spy(); goTo(n.getBoundingClientRect().top + scrollY - topCover(n, 24) - 24, label); const h = /^H\d$/.test(n.tagName) ? n : n.querySelector('h1,h2,h3,h4') || n; h.classList.remove(P + 'cue'); void h.offsetWidth; h.classList.add(P + 'cue'); };
     PN.jump = jump;
     // questions on no part (or a part no longer on the page) head the list as Overall
     const asks = allThreads().map((t) => ({ ...(t.id.startsWith('q:') ? askBy(t.id.slice(2)) : noteOf(t.id)), block:partOfRow(t.id), _rowId:t.id }));
@@ -3263,8 +3347,13 @@
   }
   // how far down the window the page's own sticky or fixed header reaches once part n is at the top, so a jump lands
   // the part under it instead of beneath it. A sticky one counts only if its box starts above n and runs past it.
-  function topCover(n) {
+  // The layer's own title bar (.pnH, headDraw) counts too: it shows once the page's h1 has scrolled off, so a jump that
+  // carries the h1 away would land the part's heading under it (the user, 2026-11-18: "col1 anchors cause col2 scroll that is
+  // hidden by row 1"). `pad` is the room the caller leaves above the part, so the bar is judged where the window ends up.
+  function topCover(n, pad = 0) {
     const r = n.getBoundingClientRect(); let cover = 0;
+    const h = pageH1(), row = out.querySelector('.hd'), rowH = out.offsetWidth && row ? row.getBoundingClientRect().height : 0;
+    if (h && rowH >= 2 && !WRAP.classList.contains('pn-tight') && !n.contains(h) && h.getBoundingClientRect().bottom <= r.top - pad) cover = rowH;
     for (const x of document.body.querySelectorAll('*')) {
       if (x.closest('.pn-ui') || x.contains(n) || n.contains(x)) continue;
       const cs = getComputedStyle(x);
@@ -3368,18 +3457,31 @@
     .pnN-row .lbl{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
     .pnN-row>.h:not(:has(>.ib)){min-height:0;height:0;margin-bottom:0}
     .pnN-row>.h{justify-content:flex-end}
-    .pnN-row>.h:has(>.new){min-height:17px;height:17px;margin-bottom:8px;justify-content:flex-start}
+    .pnN-row>.h:has(>.new){display:inline-flex;vertical-align:middle;min-height:18px;height:18px;margin-bottom:6px;padding:0;justify-content:flex-start}
+    .pnN-row>.new{vertical-align:middle;margin-bottom:6px}
+    .pn-thread-position>.pn-open-dot{right:16px;top:21px}
     .pnN-row>.h>.new{margin-bottom:0}
-    .pnN-row>.h:has(>.new)>.pn-open-dot{top:50%}
-    .pnN-row>.h>.pn-open-dot{top:11.5px}
-    .pnN-row>.new+.h>.pn-open-dot{top:-17px}
-    .pnN-row:has(>.h>.pn-open-dot)>.q{padding-right:20px}
-    .pnN-row:has(>.h>.pn-open-dot):not(:has(>.q))>.b.was{margin-right:20px}
+    /* Current messages stand apart from the native pale bubbles of carried rounds: one step lighter than the 1.151 grey, with light text on
+       dark (the user, 2026-11-18: the new agent bubble was "a little too dark. not enough contrast on the text"; picked A of the options) */
+    :root{--pn-current-bub:#d2d2d9;--pn-current-ink:#1d1d1f}
+    :root.pn-dark{--pn-current-bub:#52525a;--pn-current-ink:#f5f5f7}
+    .pnN-row .qb[data-age="current"]{background:var(--pn-current-bub);color:var(--pn-current-ink)}
+    .pnN-row .qb[data-age="prior"]{background:var(--pn-bub);color:var(--pn-ink)}
+    .pnN-row .pn-day{display:grid;place-items:center;min-height:18px;margin:12px 0 6px;color:var(--pn-muted);font:600 12.6px/1.4 var(--pn-ui);text-align:center;cursor:help;outline-offset:4px}
+    .pnN-row .pn-day:focus-visible{outline:2px solid var(--pn-me);border-radius:4px}
+    .pnN-row>.pn-day{opacity:1}
+    .pnN-row .pn-day+:is(.qb,.b){margin-top:0}
+    .pnN-row>:is(.h,.new,.pn-thread-position)+.pn-day{margin-top:0}
+    .pnN-row>:is(.qb,.b):has(+.pn-day){margin-bottom:0}
     .pn-loop-pop{background:none}
     .pn-loop-core,.pn-loop-ring{position:absolute;inset:0;box-sizing:border-box;border-radius:50%;pointer-events:none}
     .pn-loop-core,.pn-loop-spark{background:var(--pn-open)} .pn-loop-ring{border:2px solid var(--pn-open)}
     .pn-loop-spark{position:absolute;left:50%;top:50%;width:3px;height:3px;border-radius:50%}
-    .pn-open-label{display:inline-flex;align-items:center;gap:10px}
+    .pn-open-label{position:relative;display:inline-flex;align-items:center;gap:10px;padding-right:20px;transition:padding-right 320ms cubic-bezier(.25,.7,.3,1)}
+    .pn-open-label.pn-open-empty{padding-right:0;transition-delay:130ms}
+    .pn-open-label>.pn-open-key{position:absolute;right:0;top:50%;transform:translateY(-50%)}
+    .pn-open-key[hidden]{display:none}
+    @media(prefers-reduced-motion:reduce){.pn-open-label{transition:none}}
     .pn-total-badge{position:relative;flex:none;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;box-sizing:border-box;border-radius:50%;background:var(--pn-ink);color:var(--pn-white);font:600 13px/24px var(--pn-ui);font-variant-numeric:tabular-nums}
     .pn-total-badge.pn-three{font-size:11px}
     .pn-badge-dot[hidden]{display:none} .pn-rail-total,.pnO-total,.pn-pos-compact{display:none}
@@ -3395,8 +3497,7 @@
     /* The last word carries the same clearance for every sticker; the spacer cannot wrap alone. */
     .pnN-row.ask .qb::after{content:'\\00a0';display:inline;width:auto;padding-left:28px}
     .pnN-row.ask .qb:has(>.pn-stk.big)::after{width:auto}
-    .pnN-row:not(.ask) .b{margin-right:12px}
-    .pnN-row:not(.ask):has(>.b)>:is(.pnF,.pnF-ask){margin-right:12px}
+    /* One right edge for user bubbles, attachments, and the quote’s circular Sticker button (including its 3.5 px ring). */
     .pnN-row:not(.ask){padding-bottom:28px}
     .pnN-row:not(.ask) .b{position:relative;overflow:visible}
     .pnN-row.fold:not(.ask) .b{white-space:normal;overflow:visible;text-overflow:clip}
@@ -3517,6 +3618,13 @@
   // typing bubble until it grows into the message (postArrive; the user: "the cursor needs to go to the
   // place a bubble is written in col3"). A reply's row shows the user's note meanwhile: that's the user's side, there already
   const postLive = new Set(), postStep = new Map();
+  // the thread the cursor is starting: the tie shoots out from its words to it as it taps the typing bubble in, as it does
+  // to a note the user starts on a selection, and swings across to the next one it starts, as a pick does; it lets go
+  // when the cursor flies off, or the user picks a thread (the user, 2026-11-20: "the thread should appear with the same
+  // connecting line animation as when i'm selecting text and the thread appears connected to it. so it should look natural")
+  let tieId = null;
+  const tieOn = (id) => { tieId = id; animateLine = true; drawLine(); };
+  const tieOff = () => { if (!tieId) return; tieId = null; drawLine(); };
   let building = false;   // the round's opening is under way (the opening, below): arrivals wait for it
   let roundTurn = null, turnNow = null, turnBack = null;   // the bar's turn to a new round, as the opening plays it, its end at once, and Replay's turn back (below)
   if (PN.ASKS_OPEN) PN.ASKS.filter((a) => a.ew && !ewSeen[a.id]).forEach((a) => { if (reduced()) ewKeep(a.id); else ewLive.add(a.id); });
@@ -3524,8 +3632,7 @@
   const ewOpen = (a) => !!a.ew && ewLive.has(a.id);
   // new questions count when the bubble lands; carried questions are there from the start
   const openQuestion = (a) => PN.answerable(a) && !postLive.has(a.id) && !PN.threadClosed(a);
-  const newQuestion = (a) => !a.reply && !a.carried;
-  const newTag = (a) => newQuestion(a) ? '<span class="new">New</span>' : '';
+  const newTag = (a) => a.added ? '<span class="new">New</span>' : a.upd ? '<span class="new upd">Updated</span>' : '';
   // while the cursor works on one, the step it's at: 1 clicked into its Reply box and typing (ewTyped: how much is in), 2
   // out of the box with the user's bubble in, 3 the ✅ stamped on, 4 let go
   const ewStep = new Map(), ewTyped = new Map();
@@ -3709,7 +3816,7 @@
   // redraws the rows: landed in the press itself, it took the row under the user's pointer away, and the click picking it was lost.
   // The opening's cut waits for the click the same way (1.82.1): a click in its wipe picks the row the user clicked
   const openingStarted = () => OP.live && OP.started;
-  const cCutNow = () => { if (openingStarted()) opCut(); else if (cBusy && !cCut) { landAll(); cStop(); } };
+  const cCutNow = () => { if (openingStarted()) opCut(); else if (cBusy && !cCut) { landAll(); cStop(); if (WRAP.classList.contains('pn-done')) typeAll(); } };   // under Done, the summary being typed in is all there at once too
   const UPS = ['pointerup', 'pointercancel', 'touchend', 'touchcancel'];
   let cPress = false;
   function cLetGo() {
@@ -3717,7 +3824,9 @@
     const go = () => { clearTimeout(t); removeEventListener('click', go); cCutNow(); }, t = setTimeout(go, 300);
     addEventListener('click', go);   // bubbling, after the click's own handlers
   }
-  ['wheel', 'keydown'].forEach((k) => addEventListener(k, (e) => { if (e.isTrusted) cCutNow(); }, { capture: true, passive: true }));
+  // a scroll or key while the opening waits out its settle (below) skips it too; a press doesn't, as it may be the click that
+  // brought the window forward
+  ['wheel', 'keydown'].forEach((k) => addEventListener(k, (e) => { if (!e.isTrusted) return; if (OP.settling) opCut(); else cCutNow(); }, { capture: true, passive: true }));
   ['pointerdown', 'touchstart'].forEach((k) => addEventListener(k, (e) => {
     if (!e.isTrusted || cPress || !(openingStarted() || (cBusy && !cCut))) return;
     cPress = true; UPS.forEach((u) => addEventListener(u, cLetGo, true));
@@ -3944,6 +4053,7 @@
     if (postStep.get(id) !== 'held') return;
     postStep.set(id, 'tap');
     const r = ewEl(id); if (!r) return;
+    tieOn('q:' + id);
     const a = askBy(id), mine = r.classList.contains('rp');
     r.classList.remove('ph', 'rp'); lightMarks();
     if (mine && a) swapWords(r.querySelector('.lbl'), postLabel(a, false));
@@ -4035,7 +4145,7 @@
     } finally {
       if (cut && !cur.gone) fadeOff(cur.el);
       else if (!cut) cur.el.remove();
-      cBusy = false; cCut = false; cNow = null;
+      cBusy = false; cCut = false; cNow = null; tieOff();
       setTimeout(ewLook, rnd(450, 800) * SLOW); syncPark();
     }
   }
@@ -4101,7 +4211,12 @@
     thrPos.querySelector('.pn-pos-compact').textContent = `${i < 0 ? '–' : i + 1}/${n}`;
     thrPos.title = `${n} total thread${n === 1 ? '' : 's'}`; thrPos.setAttribute('aria-label', thrPos.querySelector('.pn-pos-full').textContent);
     if (!thrTl.querySelector('.pn-open-label')) { const label=el('<span class="pn-open-label"><span class="pn-open-number"></span><span class="pn-open-key" aria-hidden="true"></span></span>'); const badge=totalBadge(n,waiting.length>0);badge.classList.add('pn-rail-total');thrTl.replaceChildren(label,badge); }
-    thrTl.querySelector('.pn-open-number').textContent = `${waiting.length} open`; updateTotal(thrTl.querySelector('.pn-rail-total'),n,waiting.length>0);
+    const openLabel=thrTl.querySelector('.pn-open-label'), openKey=openLabel.querySelector('.pn-open-key');
+    const hadOpen=openLabel.dataset.open, hasOpen=waiting.length>0, openRect=hadOpen === 'true' && !hasOpen ? openKey.getBoundingClientRect() : null;
+    openLabel.dataset.open=String(hasOpen); openLabel.classList.toggle('pn-open-empty',!hasOpen); openKey.hidden=!hasOpen;
+    if (hadOpen === 'true' && !hasOpen) popLoop(openRect,'open-legend');
+    else if (hadOpen === 'false' && hasOpen) popLoopIn(openKey,'open-legend');
+    thrTl.querySelector('.pn-open-number').textContent = `${waiting.length} open`; updateTotal(thrTl.querySelector('.pn-rail-total'),n,hasOpen);
     let leftTotal=out.querySelector('.pnO-total');if(!leftTotal){leftTotal=el('<div class="pnO-total"></div>');leftTotal.append(totalBadge(n,waiting.length>0));out.querySelector('.hd').after(leftTotal);}updateTotal(leftTotal.querySelector('.pn-total-badge'),n,waiting.length>0);
     thrTl.disabled = !waiting.length; thrPv.disabled = thrNx.disabled = !n; thrShow(true);
     const ids = new Set(waiting.map((a) => a.id)), reopened = new Set(threads.filter(t => ids.has(t.id) && loopStates.get(t.id)?.open === false).map(t => t.id));
@@ -4113,10 +4228,10 @@
       }
       const number = `${index + 1} of ${n}`;
       if (position.textContent !== number) position.textContent = number;
-      const on = ids.has(t.id), before = loopStates.get(t.id), h = t.row.querySelector('.h');
+      const on = ids.has(t.id), before = loopStates.get(t.id);
       t.row.classList.toggle('wait', on);
-      let dot = h?.querySelector('.pn-open-dot');
-      if (on && h && !dot) { dot = el('<span class="pn-open-dot" role="img" aria-label="Open thread" title="Open thread"></span>'); h.prepend(dot); }
+      let dot = position.querySelector('.pn-open-dot');
+      if (on && !dot) { dot = el('<span class="pn-open-dot" role="img" aria-label="Open thread" title="Open thread"></span>'); position.append(dot); }
       if (!on && dot) dot.remove();
       if (before?.open === false && on && ui.notes) popLoopIn(dot,t.id);
       if (before?.open && !on) popLoop(before.rect,t.id);
@@ -4170,7 +4285,7 @@
 
   // ---------- the opening: every round opens the same way (the user picked "E · Wipe", then widened it: "do a wipe for all rounds"). The page opens as the user
   // left it: the version before this one in a sealed frame over the page (add_notes.py's snapshot of it, `.<page
-  // file>.prev.js`), or on round one a blank page, and on a later round the bar in the look the user left (Updating, or Done) with the
+  // file>.prev.js`), or on round one a quiet skeleton, and on a later round the bar in the look the user left (Updating, or Done) with the
   // Outline naming the version the user left. The round turns (the bar's fade and roll, "a new round" below: "that's what kicks off the
   // subsequent round's animations"). Then the agent's cursor clicks the top left of the page's content in the window, and a
   // soft edge runs down the window from there, the new version above it and the old one below, while the cursor waits at
@@ -4191,6 +4306,7 @@
   }
   // a plain page's current round, or the latest version (a page that takes its notes in place has no earlier file)
   const OP_ON = ((!V && PN.LISTED <= 1) || (!!V && V.cur === V.last)) && opSeen !== OP_STAMP && !reduced();
+  const OP_FIRST = PN.ROUND === 1 && (!V || V.cur === 0);
   // WIPE: the edge's run down the window, at half the mockup's speed (the user: "speed 50%", "Just the wipe"); SOFT: its band,
   // the old words fading out over its lower half and the new ones in over its upper half, so the two never show at once
   const OP = { WIPE: 1800, SOFT: 140, live: false, over: false, cur: null, cover: null, veil: null, fr: null, ol: null };
@@ -4209,7 +4325,20 @@
     .pn-wiping .pnN-links{opacity:0} .pnN-links{transition:opacity calc(.2s * var(--pn-k,1)) ease}
     .pn-opwait .pnO:not(.pnWo) :is(.ol,.hd .ttl,.pnV){visibility:hidden}
     .pnWo-v{position:fixed;left:0;top:0;bottom:0;z-index:2147482040;box-sizing:border-box;background:var(--pn-side);border-right:1px solid var(--pn-hair);pointer-events:none}
-    .pnO.pnWo{z-index:2147482050;pointer-events:none}`);
+    .pnO.pnWo{z-index:2147482050;pointer-events:none}
+    .pnSk-page{position:absolute;overflow:hidden;pointer-events:none}
+    .pnSk-outline{display:block;background:var(--pn-hair);border-radius:4px}
+    .pnSk-outline{height:12px;width:72%;margin:24px 20px}.pnSk-outline:nth-child(2){width:54%}
+    .pnSk-page::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);animation:pnSk-sheen 1.8s ease-in-out infinite}
+    .pnSk-page.still::after{animation:none;display:none}
+    :where(.pn-dark) .pnSk-page::after{background:linear-gradient(100deg,transparent,rgba(255,255,255,.08),transparent)}
+    @keyframes pnSk-sheen{from{opacity:0;transform:translateX(-55%)}30%,70%{opacity:1}to{opacity:0;transform:translateX(55%)}}
+    @media(prefers-reduced-motion:reduce){.pnSk-page::after{display:none}}
+    `);
+  // Prepaint CSS is outside the layer's UI scaling; keep this one placeholder at the same viewport coordinates.
+  const opSkStyle = document.createElement('style');
+  opSkStyle.textContent = `.pnSk-page{position:absolute;overflow:hidden;left:max(24px,calc((100vw - 680px)/2));top:64px;width:min(680px,calc(100vw - 48px));height:430px;pointer-events:none;background:linear-gradient(var(--pn-hair),var(--pn-hair)) 0 0px/72% 32px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 72px/100% 13px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 103px/87% 13px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 134px/64% 13px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 216px/47% 21px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 274px/100% 13px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 305px/87% 13px no-repeat,linear-gradient(var(--pn-hair),var(--pn-hair)) 0 336px/64% 13px no-repeat}@media(max-width:600px){.pnSk-page{top:48px}}`;
+  ROOT.insertBefore(opSkStyle, WRAP);
   const frClear = (c) => !c || c === 'transparent' || /rgba\([^)]*,\s*0\)$/.test(c);
   // ---------- tabs: role="tab" with aria-controls, naming a role="tabpanel", is all a page needs (the user: "make sure human-feedback
   // can natively handle tabs"). The layer switches panels and keeps aria-selected only when the page's own script hasn't; it
@@ -4239,8 +4368,10 @@
     try { sessionStorage.setItem(TABS, JSON.stringify({ ...tabsKept(), [tabSets().indexOf(tabSet(t))]: tabKey(t) })); } catch (e) { /* storage blocked: the first tab next time */ }
   });
   addEventListener('hashchange', () => {
-    const n = document.getElementById(decodeURIComponent(location.hash.slice(1))); if (!n || !away(n)) return;
-    showPart(n); scrollTo(0, n.getBoundingClientRect().top + scrollY - topCover(n));
+    const n = document.getElementById(decodeURIComponent(location.hash.slice(1))); if (!n) return;
+    if (away(n)) { showPart(n); scrollTo(0, n.getBoundingClientRect().top + scrollY - topCover(n)); return; }
+    // the browser's own jump leaves only the part's scroll-margin above it: under the title bar once the h1 has gone
+    const y = n.getBoundingClientRect().top, c = topCover(n, 24); if (c && y < c + 24 - 1) scrollTo(0, y + scrollY - c - 24);
   });
   function bootTabs() {
     const target = document.getElementById(decodeURIComponent(location.hash.slice(1))), kept = tabsKept();
@@ -4311,6 +4442,7 @@
     c.classList.add('pnWo'); c.setAttribute('aria-hidden', 'true'); c.inert = true; ol.innerHTML = '';
     let doc = null; try { doc = OP.fr?.contentDocument; } catch (e) { /* a frame we can't reach: no rows */ }
     if (doc?.body) opRows(doc).forEach((x) => ol.appendChild(x));
+    else if (OP.sk) for (let i = 0; i < 3; i++) ol.appendChild(el('<span class="pnSk-outline"></span>'));
     const v = el('<div class="pnWo-v" aria-hidden="true"></div>'), o = out.getBoundingClientRect(), top = opOlTop();
     v.style.width = o.width + 'px'; c.style.clipPath = v.style.clipPath = `inset(${top}px 0 0 0)`;
     WRAP.append(v, c);
@@ -4322,18 +4454,51 @@
   const opOlEnd = () => textEnd(OP.ol?.c.querySelector('.ol'), out.querySelector('.ol'));
   function opOutlineGone() { OP.ol?.c.remove(); OP.ol?.v.remove(); OP.ol = null; }
   const opScroll = () => { try { OP.fr?.contentDocument?.scrollingElement?.scrollTo(scrollX, scrollY); } catch (e) { /* a frame we can't reach shows its top */ } };
-  async function opCoverUp(atEnd) {
-    const html = OP.prevHtml !== undefined ? OP.prevHtml : (OP.prevHtml = V && V.cur > 0 ? await opPrev() : null);
+  // The skeleton belongs to the old cover, so the existing click and shared soft edge remove it as they reveal the page.
+  // Round one has it, and so does any later version with no earlier page to show: none kept, or one that showed nothing
+  function opSkeleton() {
+    // Keep the prepaint skeleton's geometry while the sidebars settle; the cursor still clicks the page's real text.
+    OP.sk = true; OP.veil.appendChild(el('<div class="pnSk-page" aria-hidden="true"></div>'));
+  }
+  // The snapshot keeps none of the old version's scripts, so a page its script draws comes back as a hollow shell: the
+  // heading and intro over an empty box (the user, 2026-11-19, a try-on page's version 6: "showing col2 content at the top
+  // instead of a skeleton"). Its words ending above half as far down the window as the new version's mark it hollow
+  function opHollow() {
+    let body = null; try { body = OP.fr?.contentDocument?.body; } catch (e) { return false; }   // a frame we can't reach: as it is
+    if (!body) return false;
+    const was = textEnd(body) ?? 0, now = textEnd(document.body) ?? 0;
+    return now > 0 && was < now / 2;
+  }
+  const opSkeletonStill = () => OP.cover?.querySelector('.pnSk-page')?.classList.add('still');
+  // Prepare even behind another app; focus gates motion, never the starting view. Share an in-flight
+  // preparation with opRun so focus arriving during the snapshot load cannot create a second cover.
+  let opPreparing = null;
+  function opCoverUp(atEnd) {
+    if (opPreparing) return opPreparing;
+    if (OP.cover) return Promise.resolve();
+    return (opPreparing = opMakeCover(atEnd).finally(() => { opPreparing = null; }));
+  }
+  async function opMakeCover(atEnd) {
     const c = el(`<div class="pnWp" aria-hidden="true" style="--pn-k:${SLOW}"><div></div></div>`);
     OP.veil = c.firstChild; OP.veil.style.background = opBg();
-    let loaded = null;
-    if (html) { OP.fr = opFrame(html); loaded = new Promise((ok) => { OP.fr.onload = ok; setTimeout(ok, 2500); }); c.append(OP.fr); }
+    opSkeleton();
     const y = atEnd ? innerHeight + OP.SOFT : -OP.SOFT * 2;
     OP.cover = c; opEdge(y); WRAP.appendChild(c); WRAP.classList.add('pn-wiping');
-    if (loaded) await loaded;
-    try { document.querySelectorAll('[role="tabpanel"][id]').forEach((p) => { const was = OP.fr?.contentDocument?.getElementById(p.id); if (was) was.hidden = p.hidden; }); } catch (e) { /* a frame we can't reach shows its first tab */ }   // the version before, on the tab in view
-    opScroll();
-    if (!OP.over && (OP.ol = opOutline())) opOlEdge(y);
+    if ((OP.ol = opOutline())) opOlEdge(y);
+    const html = OP.prevHtml !== undefined ? OP.prevHtml : (OP.prevHtml = V && V.cur > 0 ? await opPrev() : null);
+    if (OP.over || OP.cover !== c) return;
+    if (html) {
+      const f = opFrame(html); OP.fr = f; f.style.visibility = 'hidden';
+      const loaded = new Promise((ok) => { f.onload = ok; setTimeout(ok, 2500); }); c.append(f);
+      await loaded;
+      if (OP.over || OP.cover !== c) return;
+      try { document.querySelectorAll('[role="tabpanel"][id]').forEach((p) => { const was = f.contentDocument?.getElementById(p.id); if (was) was.hidden = p.hidden; }); } catch (e) { /* a frame we can't reach shows its first tab */ }
+      opScroll();
+      if (opHollow()) { f.remove(); OP.fr = null; }
+      else { OP.veil.querySelector('.pnSk-page')?.remove(); OP.sk = false; f.style.visibility = ''; }
+    }
+    opOutlineGone();
+    if ((OP.ol = opOutline())) opOlEdge(y);
     WRAP.classList.remove('pn-opwait');
   }
   // where the first line of words in view starts, inside `root`
@@ -4372,7 +4537,7 @@
   // ---------- agents do only what they own (the user, on round 3: "each
   // agent can't misrepresent what they owned ... they should move independently ... except that the key actions need to
   // happen in sequence"; the user "loves it"). add_notes.py --helper and --owns write who helped and what each made into the tag
-  // (data-agents). The key actions keep their order: the round number, then the Outline, then the page, then the notes.
+  // (data-agents). The key actions keep their order: the round number, then the Outline and page together, then the notes.
   // Between them each agent moves on its own: it comes in when it likes, waits only for the key action before its own, and
   // leaves once its last job is done. The round number is a helper's (the first with nothing of its own in view, else the
   // first); the Outline is the lead's; on the page each agent wipes only its own parts in view, each with its own edge, so two
@@ -4473,32 +4638,25 @@
       }
       const q = lead[0]; return { x: opStart().x, y: clamp(q.s0 + 24, 24, H - 40) };
     };
-    // the key actions' ends, in their order: the round turned, the Outline's wipe at its bottom, each share of the page at its
+    // the key actions' gates: the round turned, the shared Outline/page wipe started, each share of the page at its bottom
     const G = { turn: gate(), outline: gate(), lead: gate() }, ends = bands.map((bs) => bs.map(() => gate())), pageDone = [];
     if (turnBy < 0) G.turn.open();
     const cur = OP.cur = cursor();
     const flyIn = async (c, at) => { if (!c.placed) { place(c, entry(at, c.tag.offsetWidth)); opNote(c.who || AGENT, 'enter'); } await fly(c, () => at, { over: 0, dead }); };
-    // the lead: the Outline, then its share of the page; it may come in before the round turns, or after
+    // the lead clicks only the page; its edge also reveals the Outline, with no separate visit to column one
     (async () => {
       try {
         await beat(rnd(0, 1500)); if (dead()) return;
-        const olb = OP.ol && OP.ol.c.querySelector('.ol').getBoundingClientRect();
-        if (olb && olb.height > 0) {
-          const at = { x: olb.left + 20 * UI, y: olb.top + 6 * UI };
-          await flyIn(cur, at); if (dead()) return;
-          await G.turn; if (dead()) return;
-          press(cur); tapRing(at.x, at.y); opNote(AGENT, 'outline', cur);
-          const w = wipeRun(OP.ol.top, H, opOlEdge, false, opOlEnd() ?? H); w.done.then(opOutlineGone);
-          await w.bottom; opNote(AGENT, 'outline bottom'); if (dead()) return;
-        } else { opOutlineGone(); await G.turn; if (dead()) return; }
+        await G.turn; if (dead()) return;
+        const at = lead.length ? leadStart() : opStart();
+        await flyIn(cur, at); if (dead()) return;
+        press(cur); tapRing(at.x, at.y); opNote(AGENT, 'page', cur);
+        if (OP.ol) opNote(AGENT, 'outline', cur);
+        const ol = OP.ol, edge = edgeOf('L');
+        const w = wipeRun(Math.min(at.y, ol?.top ?? at.y), H, (y) => { edge(y); if (OP.ol === ol && ol) opOlEdge(y); });
+        pageDone.push(w.done); w.done.then(() => { if (OP.ol === ol) opOutlineGone(); });
         G.outline.open();
-        if (lead.length) {
-          const at = leadStart();
-          await flyIn(cur, at); if (dead()) return;
-          press(cur); tapRing(at.x, at.y); opNote(AGENT, 'page', cur);
-          const w = wipeRun(at.y, H, edgeOf('L')); pageDone.push(w.done);
-          await w.bottom; opNote(AGENT, 'page bottom');
-        }
+        await w.bottom; opNote(AGENT, 'page bottom'); if (ol) opNote(AGENT, 'outline bottom');
       } finally { G.outline.open(); G.lead.open(); }
     })();
     // each helper: the round number if it's its job, then its own parts in view; then it goes, whatever the others are doing
@@ -4509,10 +4667,7 @@
         await beat(turn ? rnd(0, 700) : rnd(150, 1700)); if (dead()) return;
         const h = agCursor(i);
         if (turn) {
-          const r = bar.querySelector('.rn').getBoundingClientRect(), at = { x: r.left + r.width * 0.5, y: r.top + r.height * 0.55 };
-          await flyIn(h, at); if (dead()) return;
-          press(h); tapRing(at.x, at.y, h.cls); opNote(a.name, 'round', h);
-          await roundTurn(); opNote(a.name, 'round done'); G.turn.open(); if (dead()) return;
+          await roundTurn(h); G.turn.open(); if (dead()) return;
         }
         for (let k = 0; k < mine.length; k++) {
           const b = mine[k];
@@ -4537,9 +4692,10 @@
   async function opRun() {
     if (!rpOn) { OPLOG.length = 0; opT0 = performance.now(); }   // Replay's log starts at its press
     rpSync();
-    if (!OP.cover) await opCoverUp(); if (OP.over) return;
+    await opCoverUp(); if (OP.over) return;
     document.documentElement.classList.remove(P + 'wait');
     await beat(300); if (OP.over) return;   // a beat on the page as the user left it
+    opSkeletonStill();   // the cursor is the only activity once it arrives
     if (HELPERS.length) {
       const { cur: lead, done } = await opShared(); if (OP.over) return;
       building = false;
@@ -4554,36 +4710,27 @@
       ewArm(200);
       return;
     }
-    if (roundTurn) { opNote('', 'round'); await roundTurn(); if (OP.over) return; opNote('', 'round done'); }
-    // the agent comes in and wipes each column in turn, the Outline, then the page, then the notes (the user: "column one ...
-    // happens first, and then column two happens second, and then column three happens third"): it clicks the top left of
-    // the column's words, and the click starts its wipe ("simultaneously with the start of the animation")
     const cur = OP.cur = cursor(), dead = () => OP.over;
-    let fresh = true;
-    // it moves on as the edge passes the column's last words (the user, 1.97.2: "make it feel to the user that there's zero
-    // wait between when an animation ... finishes and when it starts moving over to column two"); the edge runs on out
-    // below them while it flies, and `start` returns that run's end as `{ done }` (a bare promise would be awaited too)
+    // One cursor starts the turn at the round number, then clicks column two to reveal columns one and two together.
+    if (roundTurn) { await roundTurn(cur); if (OP.over) return; }
+    // The edge runs on below the last words while the cursor flies to Notes. `start` returns that run's end as
+    // `{ done }` so its caller can move on without awaiting the trailing edge through the empty space.
     const start = async (at, edge, y0 = at.y, go) => {
-      if (fresh) { fresh = false; const p = entry(at, cur.tag.offsetWidth); cur.el.classList.add('nt'); put(cur, p.x, p.y); showTag(cur); void cur.el.offsetWidth; cur.el.classList.remove('nt'); }
+      if (!cur.placed) place(cur, entry(at, cur.tag.offsetWidth));
       await fly(cur, () => at, { over: 0, dead }); if (OP.over) return null;
       press(cur); tapRing(at.x, at.y);
       const w = wipeRun(y0, innerHeight, edge, true, go?.() ?? innerHeight);
       await w.bottom; return { done: w.done };
     };
-    // the Outline's click is at the top left of its list, where the agent writes it, never on a row's words or the header
-    // (the user: "the agent should be clicking at the top of the outline, not the first row ... It's the outline that the
-    // personified agent is writing"). Its wipe starts at the bar's foot, so nothing above it changes, and runs down through
-    // the version shelf (the version the user left to this one) and the list
-    if (OP.ol) {
-      const b = OP.ol.c.querySelector('.ol').getBoundingClientRect();
-      let out = null;
-      if (b.height > 0) { opNote(AGENT, 'outline'); out = await start({ x: b.left + 20 * UI, y: b.top + 6 * UI }, opOlEdge, OP.ol.top, opOlEnd); if (OP.over) return; opNote(AGENT, 'outline bottom'); }
-      const ol = OP.ol; (out?.done || Promise.resolve()).then(() => { if (OP.ol === ol) opOutlineGone(); });
-    }
-    // the cursor moves on the moment each wipe reaches the column's foot, with no pause after it (the user, 1.85.0: "the cursor
-    // animation seems ot wait after the column finishes animating, can it move as soon as the animation finishes")
+    // The same edge crosses both columns; the Outline's title stays outside its mask. Move to Notes once both
+    // columns' last visible words are revealed, while the edge finishes through the empty space below them.
     opScroll(); opNote(AGENT, 'page');
-    const cover = OP.cover, pageOut = await start(opStart(), opEdge, undefined, () => textEnd(document.body, OP.fr?.contentDocument?.body)); if (OP.over) return; opNote(AGENT, 'page bottom');
+    const cover = OP.cover, ol = OP.ol, at = opStart();
+    if (ol) opNote(AGENT, 'outline');
+    const pageOut = await start(at, (y) => { opEdge(y); if (OP.ol === ol && ol) opOlEdge(y); }, Math.min(at.y, ol?.top ?? at.y),
+      () => Math.max(textEnd(document.body, OP.fr?.contentDocument?.body) ?? 0, opOlEnd() ?? 0));
+    if (OP.over) return; opNote(AGENT, 'page bottom'); if (ol) opNote(AGENT, 'outline bottom');
+    pageOut.done.then(() => { if (OP.ol === ol) opOutlineGone(); });
     pageOut.done.then(() => { if (!cover.classList.contains('gone')) cover.remove(); if (OP.cover !== cover) return; OP.cover = null; WRAP.classList.remove('pn-wiping'); });
     // then the notes column, with the same cursor: each message in view, top to bottom, then the rest land as it goes
     // (visit). With nothing there for it it goes, and what's further down is there as it does; with the column shut, the
@@ -4618,21 +4765,29 @@
     ewArm(200);
   }
   if (OP_ON) {
-    // A selected tab can be visible behind another app. Wait for focus before starting its opening.
-    let ready = document.readyState === 'complete', queued = false;
+    // A selected tab can be visible behind another app. Wait for focus before starting its opening, and for the focus to
+    // hold: Chrome gives a tab that AppleScript selects the window's focus for a moment (100-320 ms, measured 2026-11-19),
+    // even with another app in front and the tab put back at once, as show.py opens a page. Started in that moment, the
+    // opening ran on into the cursor and froze, half wiped, once the focus went (the user: "the cursor shouldn't appear
+    // until the tab is active. right now the cursor is in col2 and part of the page partly loads")
+    const SETTLE = 600;
+    let ready = document.readyState === 'complete', queued = false, settle = 0, tries = 0;
     const go = () => {
-      if (!ready || queued || OP.started || OP.over || !watching()) return;
-      queued = true;
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        queued = false;
-        if (OP.over || !watching()) return;
+      if (OP.started || OP.over) return;
+      if (!watching()) { clearTimeout(settle); queued = false; OP.settling = false; tries++; return; }   // the focus went before it held: wait again
+      if (!ready || queued) return;
+      queued = true; OP.settling = true; const mine = ++tries;
+      settle = setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (mine !== tries) return;   // a later wait took over
+        queued = false; OP.settling = false;
+        if (OP.over || OP.started || !watching()) return;
         document.removeEventListener('visibilitychange', go);
-        removeEventListener('focus', go);
+        removeEventListener('focus', go); removeEventListener('blur', go);
         OP.started = true;
         opRun().catch((e) => { opCut(); throw e; });   // a fault mid-way never leaves the page hidden
-      }));
+      })), SETTLE);
     };
-    back(go);
+    back(go); addEventListener('blur', go);
     if (ready) go();
     else {
       const loaded = () => { ready = true; go(); };
@@ -4644,7 +4799,7 @@
   // round number rolls back and this round's messages fold away; then the opening plays again, with every agent as it
   // first did. A scroll, click or key finishes it at once, as it does the opening. Off while either plays; none under
   // reduced motion ----------
-  let rpBtn = null, rpOn = false;
+  let rpBtn = null, rpOn = false, rpDone = false;   // rpDone: Replay took Done away, and it comes back once the opening has played
   function rpSync() { if (rpBtn) rpBtn.disabled = OP.live || rpOn; }
   if (V && V.cur === V.last && !reduced()) {
     // an icon button like the arrows beside it (the user: "the styling of
@@ -4662,6 +4817,9 @@
     if (OP.live || rpOn) return;
     rpOn = true; rpSync();
     try {
+      // under Done: the summary goes and the threads go back beside their words, so the round can open again as it did;
+      // Done stays recorded as seen, and comes back once the opening has played, the cursor clicking it in (doneArrive)
+      if (WRAP.classList.contains('pn-done')) { rpDone = true; clearTimeout(dnT); stAnim = true; try { showDone(false); } finally { stAnim = false; } }
       if (scrollY > 1) {
         scrollTo({ top: 0, behavior: 'smooth' });
         const t0 = performance.now(); while (scrollY > 1 && performance.now() - t0 < 1500) await frame();
@@ -4673,7 +4831,7 @@
       opNote(AGENT, 'rewound');
       await beat(340); if (OP.over) return;
       await opRun();
-    } finally { rpOn = false; rpSync(); }
+    } finally { rpOn = false; rpSync(); if (rpDone) { rpDone = false; doneArrive(); } }
   }
   // one quick wipe back up over both columns: the messages fold away, the round number rolls back down, and the version
   // before comes back up from the bottom of the window
@@ -4767,10 +4925,12 @@
   }
   // the cursor clicks where the state's word is, and parks beside the state while the agent works (the user, asked
   // whether it should stay parked beside Updating instead of flying off: "yes"), in the bar's top row, clear of Round N,
-  // the word and the Open questions row's buttons. Since 1.143.0 the state sits halfway to the Notes toggle, so the cursor
-  // points at the spinner's centre, keeping its attached name above the thread controls without growing the bar
+  // the word and the Open questions row's buttons. Leave a gap beside the spinner so the pointer never sits in its centre.
   const stWord = (cur) => spot(cur, () => rcv.querySelector('.pnN-sw') || rcv, 0.45, 0.55);
-  const parkSpot = (cur) => spot(cur, () => rcv.querySelector('.pnN-spin') || rcv, 0.5, 0.5);
+  const parkSpot = (cur) => {
+    const at = spot(cur, () => rcv, 1, 0.5);
+    return () => { const p = at(); return { x: p.x + 12 * UI, y: p.y }; };
+  };
   let parkC = null;   // the cursor parked beside Updating
   // it's parked whenever the bar reads Updating with the column open, the cursor not busy elsewhere: on a reload too,
   // where it's simply there. Updating over (Unlock, a new copy, 30 minutes): it flies off; the column shut: it goes
@@ -4843,8 +5003,9 @@
       if (jumped) doneArrive(); else syncPark();
     }
   }
-  // Done: the parked cursor (else one in from off the window) clicks the state, Done comes in with the summary, and it
-  // flies off. Cut short, Done is there at once
+  // Done: the parked cursor (else one in from off the window) clicks the state, Done comes in, and the round's threads slide
+  // down to their places under the summary (doneLand). Then it types the summary in, a section at a time, as it types a
+  // message (typeSec), and flies off. Cut short, Done is there at once, every section in and every thread in its place
   async function doneVisit(land) {
     cBusy = true; cCut = false;
     const had = parkC; parkC = null;
@@ -4852,17 +5013,28 @@
     if (had) showTag(cur, false);
     let landed = false;
     const go = () => { if (!landed) { landed = true; land(); } };
+    // once Done is in, cDead holds (the summary covers the column), so the typing has its own end: a cut, the column shut, or Unlock
+    const gone = () => cCut || !ui.notes || !WRAP.classList.contains('pn-done');
+    const alive = () => { if (gone()) throw STOP; };
     try {
       if (had) await fly(cur, word, { over: 0 }); else await flyIn(cur, word);
       if (cDead()) throw STOP;
       await beat(rnd(80, 160));
       if (cDead()) throw STOP;
-      await clickIn(cur, go);
+      await clickIn(cur, go); alive();
+      await beat(DN_SLIDE - 240 + rnd(60, 160)); alive();   // the threads reach their places (clickIn's beat is the first 240 ms)
+      // each section in view, top to bottom; one the summary's own length puts below the column's foot comes in with the rest
+      let k = 0;
+      for (const g of sheet.querySelectorAll('.pnD-g.wait')) {
+        if (!secInView(g)) continue;
+        await typeSec(cur, g, alive, gone, k++);
+      }
+      typeAll();
       await beat(rnd(300, 450));
       await flyOut(cur); cur.el.remove();
     } catch (e) {
       if (e !== STOP) throw e;
-      go(); if (!cur.gone) { cur.gone = true; fadeOff(cur.el); }
+      go(); typeAll(); if (!cur.gone) { cur.gone = true; fadeOff(cur.el); }
     } finally {
       cBusy = false; cCut = false; cNow = null;
     }
@@ -4950,6 +5122,7 @@
   }
   function showDone(on) {
     rootCls('pn-done', on); bar.classList.toggle('pn-done', on);
+    if (on) col.prepend(sheet); else WRAP.append(sheet);   // under Done the summary heads the notes column, the threads under it
     if (!on) ov.pnFit();   // the Overall box back from under Done, the user's words at their height
     thrSync(); sentUi(); relayoutSoon();
   }
@@ -4961,16 +5134,82 @@
     if (OP.live || building || cBusy || bar.classList.contains('pn-turn') || (ui.notes && jobsInView().length)) { dnHeld = true; dnT = setTimeout(doneArrive, 400); return; }
     dnHeld = false;
     // in view with the column open, the cursor clicks Done in (doneVisit); it's seen from the moment it sets off
-    if (!reduced() && ui.notes) { dn.seen = done.at; keepDn(); doneVisit(doneLand); return; }
+    if (!reduced() && ui.notes) { dn.seen = done.at; keepDn(); doneVisit(() => doneLand(true)); return; }
     doneLand();
   }
-  function doneLand() {
+  // `typed`: the cursor clicked Done in with the column open, and types the summary in next (doneVisit). Every section waits,
+  // keeping its space, so the threads slide once, straight to where they'll stay, and nothing under them moves as it types
+  function doneLand(typed) {
     if (!done) return;
+    const was = typed && !reduced() ? rowTops() : null;
+    if (was) sheet.querySelectorAll('.pnD-g').forEach((g) => g.classList.add('wait'));
     stAnim = true; try { showDone(true); } finally { stAnim = false; }   // the green fades in and the check draws
     dn.seen = done.at; keepDn();
     if (reduced()) return;
-    replayCls(sheet, 'in', 900);
+    if (was) slideRows(was); else replayCls(sheet, 'in', 900);
     dnT = setTimeout(() => rings(rcv.querySelector('.pn-ic'), bar), DRAW_AT + 410);   // as the tick finishes drawing, white on the green
+  }
+  // the threads under Done: each slides from where it was, beside its words, down to its place in the list under the summary,
+  // so the one the cursor was just typing in is seen going there, not gone (the user: "it's hard to tell what happened to the
+  // thread ... the thread should slide down ... where it would be naturally underneath. At least indicate to the user where it
+  // went"). One whose place is under the Overall box or past the column's foot slides on out of sight there. Through 1.153.7 they
+  // jumped there in one frame as the summary rose in over where they had been
+  const DN_SLIDE = 460;   // ms
+  const dnSlides = new Set();
+  const rowTops = () => new Map([...col.querySelectorAll('.pnN-row[data-id]')].map((r) => [r.dataset.id, r.getBoundingClientRect()])
+    .filter(([, b]) => b.height > 0 && b.bottom > 0 && b.top < innerHeight).map(([id, b]) => [id, b.top]));
+  function slideRows(was) {
+    col.querySelectorAll('.pnN-row[data-id]').forEach((r) => {
+      const y0 = was.get(r.dataset.id), dy = y0 == null ? null : y0 - r.getBoundingClientRect().top;
+      // translate, not transform: under Done the rows' transform is held at none (!important), which an animation can't override
+      const a = dy == null ? r.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220 * SLOW, delay: (DN_SLIDE - 160) * SLOW, easing: 'ease-out', fill: 'backwards' })
+        : Math.abs(dy) < 1 ? null : r.animate([{ translate: `0 ${dy.toFixed(1)}px` }, { translate: '0 0' }], { duration: DN_SLIDE * SLOW, easing: 'cubic-bezier(.45,0,.2,1)' });
+      if (!a) return;
+      dnSlides.add(a); a.finished.catch(() => {}).finally(() => dnSlides.delete(a));
+    });
+  }
+  // a section the column shows enough of to watch it typed: its top and two lines of it, between the bar and Unlock
+  const secInView = (g) => {
+    const b = g.getBoundingClientRect(), c = col.getBoundingClientRect();
+    return b.height > 0 && b.top >= c.top - 1 && b.top + 44 * UI <= c.bottom + 1;
+  };
+  // one section typed, as a message is (doPost): the cursor comes to where it starts, turns to a text beam and clicks; a
+  // one-line bubble comes in there with the dots running, then grows to the section's size as its words come in, top to
+  // bottom, and fades away under them. The first section's dots run as long as a message's; the next ones, which follow
+  // straight on, a little shorter
+  async function typeSec(cur, g, alive, gone, k) {
+    const first = g.firstElementChild, tb = el(`<span class="pnD-tb" aria-hidden="true">${dots()}</span>`);
+    cur.typeAt = () => (tb.isConnected ? tb : first);
+    try {
+      await fly(cur, () => { const b = first.getBoundingClientRect(); return { x: b.left + 7, y: b.top + 11 }; }, { over: 0, dead: gone }); alive();
+      await beat(rnd(60, 140)); alive();
+      press(cur);
+      tb.style.top = first.offsetTop + 'px'; g.classList.replace('wait', 'ty'); g.prepend(tb);
+      tb.animate([{ opacity: 0, translate: '0 8px' }, { opacity: 1, translate: '0 0' }], { duration: 240 * SLOW, easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'backwards' });
+      await beat(k ? rnd(420, 560) : rnd(650, 900)); alive();
+      growSec(g, tb);
+      await beat(420); alive();
+    } finally { cur.typeAt = null; shapeFor(cur); }
+  }
+  function growSec(g, tb) {
+    if (!tb.isConnected) return;
+    const from = tb.getBoundingClientRect(), top = tb.offsetTop, w = g.clientWidth, h = g.clientHeight - top - parseFloat(getComputedStyle(g).paddingBottom || 0);
+    g.classList.remove('ty');
+    const ms = 360 * SLOW;
+    tb.style.overflow = 'hidden';
+    tb.animate([{ width: from.width + 'px', height: from.height + 'px', opacity: 1 }, { width: w + 'px', height: h + 'px', opacity: 0.85, offset: 0.55 }, { width: w + 'px', height: h + 'px', opacity: 0 }],
+      { duration: ms, easing: 'cubic-bezier(.3,1.1,.55,1)', fill: 'forwards' }).finished.catch(() => {}).finally(() => tb.remove());
+    tb.firstElementChild?.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120 * SLOW, fill: 'forwards' });
+    // its words in, line by line from the top: the heading, then what's under it, each list item on its own
+    const parts = [...g.children].filter((x) => x !== tb).flatMap((x) => (x.tagName === 'UL' ? [...x.children] : [x]));
+    parts.forEach((x, i) => x.animate([{ opacity: 0, translate: '0 4px' }, { opacity: 1, translate: '0 0' }],
+      { duration: 260 * SLOW, delay: (70 + i * 45) * SLOW, easing: 'ease-out', fill: 'backwards' }));
+  }
+  // everything at once: the sections not typed (out of view, or a cut) in, any bubble gone, the threads at their places
+  function typeAll() {
+    sheet.querySelectorAll('.pnD-tb').forEach((x) => x.remove());
+    sheet.querySelectorAll('.pnD-g').forEach((g) => g.classList.remove('wait', 'ty'));
+    dnSlides.forEach((a) => a.finish()); dnSlides.clear();
   }
   window.PN_DONE = (d) => {
     const at = Number(d?.at) || 0;
@@ -5034,6 +5273,7 @@
     replying = a.ew ? null : a.id; sel = 'q:' + a.id; threadTop = top ? sel : null; footHold = null; shown = null; animateLine = true;
     questionMove = quiet === 'next' || quiet === 'next-tab' ? quiet : false;
     try { renderRows(); } finally { questionMove = false; }   // one closed in chat has no Reply box
+    doneShow(sel);
     // the flash waits for the scroll to it to finish, so one off-screen isn't over before the user sees it (the user: "the message
     // flashing red should flash only after the scroll gets there")
     const go = ++askCue;
@@ -5060,10 +5300,18 @@
   // Completing any thread moves to the next open thread below, in the same order as the manual arrows.
   let nextT = 0;
   function nudgeNext(a, picked = sel) { nextOpenThread('q:' + a.id, picked); }
+  // Freeze before the final Reply box turns into a bubble; waiting for nextOpenThread is too late.
+  function holdFinishedThread(id) {
+    if (sel !== id || unanswered().length) return false;
+    const at = was.get(id); if (!at) return false;
+    hold = { id, y: at.y, below: false, positions: new Map([...was].map(([key, place]) => [key, place.y])) };
+    sel = null;
+    return true;
+  }
   function nextOpenThread(id, picked = sel) {
     if (threadWaiting({id})) return;
     clearTimeout(nextT);
-    nextT = setTimeout(() => afterPress(() => {
+    const advance = () => {
       if (sel !== picked || rewriting || threadWaiting({id})) return;
       const all = allThreads(), i = all.findIndex((t) => t.id === id);
       if (!nudge.on && all[i]?.gone) return;   // the user switched tabs while the answered dot was fading
@@ -5076,10 +5324,16 @@
       const next = open.find(t => all.indexOf(t) > i) || open[0] || null;
       if (!next) {
         if (nudge.on) nudgeEnd();
-        replying = null; sel = null; renderRows(); ov.focus({ preventScroll: true }); ov.setSelectionRange(ov.value.length, ov.value.length); return;
+        // Let go of the selection without stacking the column from the top again.
+        const at = was.get(sel); if (at) hold = { id: sel, y: at.y, below: false };
+        const redraw = sel !== null || replying !== null;
+        replying = null; sel = null; if (redraw) renderRows(); ov.focus({ preventScroll: true }); ov.setSelectionRange(ov.value.length, ov.value.length); return;
       }
       thrGo(next, 'next');
-    }), reduced() ? 0 : 520);
+    };
+    // With no next thread, finish the handoff before yielding to animation timers.
+    if (!PN.ASKS.some(openQuestion) && !pressed) advance();
+    else nextT = setTimeout(() => afterPress(advance), reduced() ? 0 : 520);
   }
   PN.beforeCopy = () => {
     if (nudge.on) { nudge.on = false; nudge.t.forEach(clearTimeout); nudge.t = []; ovBox.classList.remove('nz'); mainCopy.classList.remove('anyway'); mainCopy._label = copyLabel(); relayoutSoon(); return true; }   // the user has seen them: copy
@@ -5373,23 +5627,50 @@
   }
   // ---------- tooltips in the layer's own look (the user: "give tooltips like 'Attach a picture' an appropriate in-style
   // tooltip (black etc)"): every title in the layer shows as a small ink label, the Undo toast's colours, under its control,
-  // or above it where the window's foot is near. It waits a moment on the first control and shows at once while the user moves
-  // between controls, as the Mac's do. While the pointer is on a control its title waits in data-pn-tip, so the browser's
+  // or above it where the window's foot is near. It shows at once on every control, with a quick fade (1.149.0; it waited
+  // 450 ms on the first one before). A file path widens it and breaks only after a slash. While the pointer is on a control its title waits in data-pn-tip, so the browser's
   // own grey box never shows, and goes back when it leaves. A shortcut after three spaces ("Top of page   ⌘↑") is set apart ----------
   css(`
     .pnT{position:fixed;left:0;top:0;z-index:2147483050;max-width:260px;box-sizing:border-box;padding:6px 9px;border-radius:var(--pn-R1);
       background:#1d1d1f;color:#fff;font:500 13px/1.3 var(--pn-ui);text-wrap:balance;box-shadow:0 4px 14px rgba(0,0,0,.18);pointer-events:none;
-      opacity:0;transform:translateY(var(--pn-tipy,-2px));transition:opacity .12s ease,transform .12s ease;visibility:hidden}
+      opacity:0;transform:translateY(var(--pn-tipy,-2px));transition:opacity .06s ease,transform .06s ease;visibility:hidden}
+    .pnT.path{max-width:min(560px,calc(100vw - 16px));text-wrap:pretty} .pnT.path .seg{white-space:nowrap}   /* a file path: wide enough for one or two lines, broken only after a slash */
+    .pnT.document{max-width:min(560px,calc(100vw - 16px));padding:14px 16px;text-wrap:pretty;pointer-events:auto}
+    .pnT.document .name{display:block;margin:0 0 10px;font-size:15px;font-weight:600;line-height:1.45;overflow-wrap:anywhere}
+    .pnT.document .name:last-child{margin-bottom:0}
+    .pnT.document .file{font-size:13px;font-weight:400;line-height:1.5;color:#cfcfd5;overflow-wrap:anywhere}
+    .pnT.document .seg{white-space:normal}
     .pnT.on{opacity:1;transform:none;visibility:visible}
     .pnT .k{margin-left:6px;padding-left:6px;border-left:1px solid rgba(255,255,255,.3);opacity:.75;white-space:nowrap}
     :root:where(.pn-dark):not([data-theme="light"]) .pnT{background:#3a3a3d;box-shadow:0 0 0 1px rgba(255,255,255,.1),0 4px 14px rgba(0,0,0,.4)}
     @media (prefers-reduced-motion: reduce){.pnT{transition:none;transform:none}}`);
   const tipEl = el('<div class="pn-ui pnT" role="tooltip" aria-hidden="true"></div>'); WRAP.appendChild(tipEl);
-  let tipAt = null, tipT = 0, tipWarm = 0;
+  let tipAt = null, tipT = 0, tipLeave = 0;
   function tipShow() {
     const x = tipAt; if (!x?.isConnected) return;
-    const [words, key] = x.dataset.pnTip.split(/ {3,}/);
-    tipEl.textContent = words; if (key) tipEl.append(Object.assign(document.createElement('span'), { className: 'k', textContent: key }));
+    const [words, key] = x.dataset.pnTip.split(/ {3,}/), path = x.dataset.pnTipPath != null;
+    const name = x.dataset.pnTipHeading != null && x.scrollWidth > x.clientWidth + 1 ? x.textContent.trim() : '';
+    tipEl.classList.toggle('path', path); tipEl.classList.toggle('document', !!name); tipEl.style.width = '';
+    tipEl.textContent = !name && !path ? words : '';
+    if (name) tipEl.append(Object.assign(document.createElement('strong'), { className: 'name', textContent: name }));
+    const file = name && path ? Object.assign(document.createElement('div'), { className: 'file' }) : tipEl;
+    if (file !== tipEl) tipEl.append(file);
+    if (path) words.split(/(?<=\/)/).forEach((part, i) => { if (i) file.append(document.createElement('wbr')); file.append(Object.assign(document.createElement('span'), { className: 'seg', textContent: part })); });   // break after a slash; the document variant also lets an overlong segment wrap
+    if (key) tipEl.append(Object.assign(document.createElement('span'), { className: 'k', textContent: key }));
+    // wrapped words leave the box at its widest allowed, with a gap after the longest line (the user: "the tooltip wraps
+    // weird, there's extra space on the right"): the box takes the longest line's width instead
+    const lines = (() => {
+      const g = document.createRange();
+      if (!name) { g.selectNodeContents(tipEl); return [...g.getClientRects()].filter((q) => q.width); }
+      // Block boxes span the whole tooltip. Measure its text lines so the title/path variant still hugs its content.
+      const rects = [], walker = document.createTreeWalker(tipEl, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) { g.selectNodeContents(walker.currentNode); rects.push(...g.getClientRects()); }
+      return rects.filter((q) => q.width);
+    })();
+    if (lines.length && new Set(lines.map((q) => Math.round(q.top))).size > 1) {
+      const cs = getComputedStyle(tipEl), pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+      tipEl.style.width = Math.ceil(Math.max(...lines.map((q) => q.right)) - Math.min(...lines.map((q) => q.left)) + pad + 1) + 'px';
+    }
     const r = x.getBoundingClientRect(), bounds = x.closest('.pn-pill')?.getBoundingClientRect() || r;
     const w = tipEl.offsetWidth, h = tipEl.offsetHeight, below = bounds.bottom + 8 + h <= innerHeight - 8;
     tipEl.style.left = Math.round(Math.max(8, Math.min(innerWidth - w - 8, r.left + r.width / 2 - w / 2))) + 'px';
@@ -5399,42 +5680,88 @@
   }
   // the label goes, and the title stays parked while the pointer is still on the control (a click, a key, a scroll):
   // back on it, the browser would show its own box a second later
-  const tipHide = (warm = true) => { clearTimeout(tipT); if (tipEl.classList.contains('on') && warm) tipWarm = Date.now(); tipEl.classList.remove('on'); };
+  const tipHide = () => { clearTimeout(tipT); tipEl.classList.remove('on'); };
   function tipOff() {
-    tipHide();
+    clearTimeout(tipLeave); tipHide();
     if (tipAt && tipAt.dataset.pnTip != null) { if (!tipAt.hasAttribute('title')) tipAt.setAttribute('title', tipAt.dataset.pnTip); delete tipAt.dataset.pnTip; }
     tipAt = null;
   }
   let tipBy = '';
   function tipOn(x, by) {
-    if (x === tipAt) return;
+    if (x === tipAt) {
+      if (x.dataset.pnTipHeading != null && by !== tipBy) { clearTimeout(tipLeave); tipBy = by; tipT = setTimeout(tipShow, 0); }
+      return;
+    }
     tipOff(); const t = x.getAttribute('title'); if (!t?.trim()) return;
     tipAt = x; tipBy = by; x.dataset.pnTip = t; x.removeAttribute('title');
     if (!x.hasAttribute('aria-label') && !x.textContent.trim()) x.setAttribute('aria-label', t.split(/ {3,}/)[0]);   // the title named an icon-only button
-    tipT = setTimeout(tipShow, by === 'key' || x.dataset.pnNow != null || Date.now() - tipWarm < 600 ? 0 : 450);   // data-pn-now: no wait (the Outline's title)
+    tipT = setTimeout(tipShow, 0);   // no wait, on every control (the user: "make all tooltips in human-feedback appear immediately")
   }
   ROOT.addEventListener('pointerover', (e) => {
-    if (e.pointerType === 'touch' || (tipAt && tipAt.contains(e.target))) return;
-    const x = e.target.closest?.('[title]'); if (x) tipOn(x, 'pointer'); else if (tipAt) tipOff();
+    if (tipEl.classList.contains('document') && tipEl.contains(e.target)) { clearTimeout(tipLeave); return; }
+    if (e.pointerType === 'touch') return;
+    if (tipAt && tipAt.contains(e.target)) { clearTimeout(tipLeave); return; }
+    const x = e.target.closest?.('[title],[data-pn-tip-heading][data-pn-tip]');
+    if (x) tipOn(x, 'pointer');
+    else if (tipAt) {
+      if (tipEl.classList.contains('document')) { clearTimeout(tipLeave); tipLeave = setTimeout(tipOff, 120); }
+      else tipOff();
+    }
   });
-  ROOT.addEventListener('pointerout', (e) => { if (tipAt && tipBy === 'pointer' && !(e.relatedTarget && tipAt.contains(e.relatedTarget))) tipOff(); });
+  ROOT.addEventListener('pointerout', (e) => {
+    if (!tipAt || tipBy !== 'pointer' || (e.relatedTarget && tipAt.contains(e.relatedTarget))) return;
+    if (tipEl.classList.contains('document')) {
+      if (e.relatedTarget && tipEl.contains(e.relatedTarget)) return;
+      clearTimeout(tipLeave); tipLeave = setTimeout(tipOff, 120);   // bridge the 8px gap while moving onto the full title
+    } else tipOff();
+  });
   ROOT.addEventListener('focusin', (e) => {
-    const x = e.target.closest?.('[title]'); let key = false;
+    const x = e.target.closest?.('[title],[data-pn-tip-heading][data-pn-tip]'); let key = false;
     try { key = !!x?.matches(':focus-visible'); } catch (err) { /* a browser without :focus-visible: no tip */ }
     if (key) tipOn(x, 'key');
   });
   ROOT.addEventListener('focusout', () => { if (tipBy === 'key') tipOff(); });
-  const roundDateFormat = new Intl.DateTimeFormat(undefined, {
+  const fullDateFormat = new Intl.DateTimeFormat(undefined, {
     year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short'
   });
+  // The machine date stays untouched. Only the displayed date/time boundary uses the user's 'at'.
+  function fullTimestamp(at) {
+    const parts = fullDateFormat.formatToParts(at);
+    const year = parts.findIndex((p) => p.type === 'year'), hour = parts.findIndex((p) => p.type === 'hour');
+    if (year >= 0 && hour > year && parts.slice(year + 1, hour).every((p) => p.type === 'literal')) {
+      parts.splice(year + 1, hour - year - 1, { type:'literal', value:' at ' });
+    }
+    return parts.map((p) => p.value).join('');
+  }
+  const dayFormat = new Intl.DateTimeFormat(undefined, { weekday:'short', month:'short', day:'numeric' });
+  const localDay = (at) => { const d = new Date(at); return [d.getFullYear(), d.getMonth(), d.getDate()].join('-'); };
+  function roundAt(a) {
+    const entry = V?.list[(a?.carried && a.from ? a.from : (V?.cur ?? 0) + 1) - 1];
+    return Date.parse(a?.authoredAt || '') || (a?.carried ? Date.parse(entry?.at || '') || 0 : PN.ROUND_AT || PN.MADE);
+  }
+  // A date belongs to the next message, so each thread starts with one and repeats it only when the local day changes.
+  function threadDates(row, a, note) {
+    row.querySelectorAll('.pn-day').forEach((x) => x.remove());
+    let day = '';
+    const sourceAt = a ? PN.sourceReceipt(a) : 0;
+    row.querySelectorAll('.qb,.b').forEach((b) => {
+      const at = b.matches('.qb') ? roundAt(a) : a ? b.classList.contains('nw') ? sourceAt : PN.messageReceipt(state.answers[a.id]) : PN.messageReceipt(note);
+      if (!at || !Number.isFinite(at)) return;
+      const next = localDay(at); if (next === day) return; day = next;
+      const d = document.createElement('time'); d.className = 'pn-day'; d.dateTime = new Date(at).toISOString();
+      d.textContent = day === localDay(Date.now()) ? 'Today' : dayFormat.format(at);
+      d.title = fullTimestamp(at); d.setAttribute('aria-description', d.title); d.tabIndex = 0;
+      b.before(d);
+    });
+  }
   function updateRoundDate() {
     const roll = roundNumber.querySelector('.pnN-roll');
     const index = V ? Math.max(0, V.cur - (roll && !roll.classList.contains('go') ? 1 : 0)) : 0;
     const entry = V?.list[index];
     roundTitle.setAttribute('aria-label', `Round ${V ? index + 1 : PN.ROUND}`);
-    const at = Date.parse(entry?.at || '') || Date.parse(entry?.made || '') || PN.ROUND_AT || PN.MADE;
+    const at = (index === (V?.cur ?? 0) ? PN.ROUND_AT : Date.parse(entry?.at || '')) || Date.parse(entry?.made || '') || PN.MADE;
     if (!at) return;
-    const label = roundDateFormat.format(at);
+    const label = fullTimestamp(at);
     if (roundTitle === tipAt) {
       roundTitle.dataset.pnTip = label;
       if (tipEl.classList.contains('on')) tipShow();
@@ -5462,6 +5789,62 @@
   }
   ['pointerdown', 'keydown', 'wheel'].forEach((t) => addEventListener(t, (event) => { if (t !== 'pointerdown' || tgt(event).closest?.('[data-round-date]') !== roundTitle) tipHide(false); }, { capture: true, passive: true }));
   addEventListener('scroll', () => tipHide(false), { capture: true, passive: true });
+
+  // ---------- the title row (1.149.0): once the page's heading scrolls away, its words fade in at the top of the page's
+  // column, as tall as the Outline's first row and in its type, lined up with the page's text. Its tooltip is the page's
+  // full file path (the tag's data-file, else a file:// address's own). No heading, or no Outline row beside it (tight),
+  // no title row. The user, 2026-11-16: "It should be the same height as column 1's row 1" ----------
+  css(`
+    .pnH{position:fixed;top:0;z-index:2147481990;box-sizing:border-box;height:60px;margin:0;padding:0;border-bottom:1px solid var(--pn-hair);
+      background:rgba(245,245,248,.76);-webkit-backdrop-filter:blur(22px) saturate(130%);backdrop-filter:blur(22px) saturate(130%);
+      display:flex;align-items:center;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .2s ease,visibility 0s linear .2s}
+    .pnH.on{opacity:1;visibility:visible;pointer-events:auto;transition:opacity .2s ease,visibility 0s}
+    :root:where(.pn-dark):not([data-theme="light"]) .pnH{background:rgba(31,31,35,.76)}
+    @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){.pnH{background:var(--pn-side)}}
+    .pnH .t{position:absolute;display:block;width:fit-content;min-width:0;margin:0;font:500 21.5px/1.15 Georgia,"Times New Roman",serif;letter-spacing:-.7px;
+      color:var(--pn-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;user-select:text;-webkit-user-select:text;cursor:default;outline-offset:3px}
+    .pnH .t:focus-visible{outline:2px solid var(--pn-ink2);border-radius:var(--pn-R0)}
+    @media (prefers-reduced-motion: reduce){.pnH,.pnH.on{transition:none}}`);
+  const FILE = (() => {
+    const f = (document.currentScript?.dataset.file || '').trim(); if (f.startsWith('/')) return f;
+    try { return location.protocol === 'file:' ? decodeURIComponent(location.pathname) : ''; } catch (e) { return ''; }
+  })();
+  const head = el('<header class="pn-ui pnH" aria-label="Document title" aria-hidden="true"><div class="t" tabindex="-1"></div></header>');
+  const headT = head.firstChild; headT.dataset.pnTipHeading = '';
+  out.after(head);   // right after the Outline, so the keyboard reaches it second, as it reads
+  if (FILE) { headT.title = FILE; headT.dataset.pnTipPath = ''; headT.setAttribute('aria-description', 'File location: ' + FILE); }
+  const pageH1 = () => [...document.body.querySelectorAll('h1')].find((h) => h.getClientRects().length && !h.closest('[hidden]')) || null;
+  // the page's text edge: the first paragraph beside the heading, inside its own padding; else the heading's
+  const textEdge = (h) => {
+    const x = (h.closest('main,article,[role="main"]') || h.parentElement)?.querySelector('p') || h, cs = getComputedStyle(x), r = x.getBoundingClientRect();
+    return { left: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft), width: x.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) };
+  };
+  let headRaf = 0;
+  function headDraw() {
+    const h = pageH1(), row = out.querySelector('.hd'), rowH = out.offsetWidth && row ? row.getBoundingClientRect().height : 0;
+    const on = !!h && rowH >= 2 && !WRAP.classList.contains('pn-tight') && h.getBoundingClientRect().bottom <= 0;
+    head.classList.toggle('on', on); head.setAttribute('aria-hidden', String(!on)); headT.tabIndex = on ? 0 : -1;
+    if (!on) return;
+    const words = h.textContent.replace(/\s+/g, ' ').trim(); if (headT.textContent !== words) headT.textContent = words;
+    const bs = getComputedStyle(document.body), bar = ROOT.querySelector('.pnN-bar');
+    const left = Math.min(out.getBoundingClientRect().right, parseFloat(bs.paddingLeft) || 0);
+    const right = Math.max(bar && bar.offsetWidth ? bar.getBoundingClientRect().left : innerWidth, innerWidth - (parseFloat(bs.paddingRight) || 0));
+    const e = textEdge(h);
+    head.style.left = left + 'px'; head.style.width = Math.max(1, right - left) + 'px'; head.style.height = rowH + 'px';
+    headT.style.left = Math.max(0, e.left - left) + 'px';
+    headT.style.maxWidth = Math.max(1, Math.min(e.width, right - Math.max(e.left, left) - 12)) + 'px';
+    if (!FILE) {
+      const hint = headT.scrollWidth > headT.clientWidth + 1 ? words : '';
+      if (tipAt === headT) { headT.dataset.pnTip = hint; if (!hint) tipOff(); }
+      else if (hint) headT.title = hint; else headT.removeAttribute('title');
+    }
+    if (tipAt === headT && tipEl.classList.contains('on')) tipShow();
+  }
+  const headSoon = () => { cancelAnimationFrame(headRaf); headRaf = requestAnimationFrame(headDraw); };
+  addEventListener('scroll', headSoon, { passive: true }); addEventListener('resize', headSoon);
+  if (window.ResizeObserver) { const ro = new ResizeObserver(headSoon); ro.observe(out); ro.observe(document.body); }
+  document.fonts?.ready.then(headSoon);
+  headSoon();
   document.addEventListener('visibilitychange', tipOff);
   // one toast offers Undo for whatever was just taken away
   let undo = null, toastT = 0, toastAt = 0;
@@ -5773,7 +6156,7 @@
   const leaveSoon = () => {
     clearTimeout(rxLeaveT);
     rxLeaveT = setTimeout(() => {
-      if (rxHover && !rxBar.matches(':hover') && !rxFace?.matches(':hover') && !rxBar._btn?.matches(':hover')) closeRx();
+      if (rxHover && !rxBar.matches(':hover') && !rxFace?.matches(':hover') && !rxBar._btn?.matches(':hover') && !rxBar._btn?._hoverHost?.matches(':hover')) closeRx();
     }, GRACE);
   };
   function hoverRx(host, go, selector) {
@@ -5782,7 +6165,7 @@
     const crossed = (e, face) => e.pointerType === 'mouse' && face && (!selector || !face.contains(e.relatedTarget));
     host.addEventListener(selector ? 'pointerover' : 'pointerenter', (e) => {
       const face = faceAt(e); if (!crossed(e, face)) return;
-      if (rxFor && (face === rxFace || face === rxBar._btn)) { clearTimeout(rxLeaveT); return; }
+      if (rxFor && (face === rxFace || face === rxBar._btn || face === rxBar._btn?._hoverHost)) { clearTimeout(rxLeaveT); return; }
       clearTimeout(rxHoverT);
       rxHoverT = setTimeout(() => {
         if (!face.isConnected || !face.matches(':hover')) return;
@@ -5823,7 +6206,9 @@
     if (keepEditing) caretOf.set(n, [a.selectionStart, a.selectionEnd]);
     if (n.react === k && (n.big || !big)) return peel(n);
     const wasOpen = threadWaiting({id:n.id});
-    n.react = k; if (big) n.big = true; else delete n.big; save(); if (from !== 'row') sel = n.id; render(); cheer(n, big, from);
+    n.react = k; if (big) n.big = true; else delete n.big; save(); if (from !== 'row') sel = n.id;
+    if (wasOpen && !keepEditing && holdFinishedThread(n.id)) replying = null;
+    render(); cheer(n, big, from);
     if (wasOpen && !keepEditing && !threadWaiting({id:n.id})) nextOpenThread(n.id);
   }
   rxBar.addEventListener('click', (e) => {
@@ -5848,11 +6233,27 @@
       s.onclick = (e) => { e.stopPropagation(); clearTimeout(rxHoverT); if (rxHover && rxFor === noteOf()) return; open(s); };
       hoverRx(s, () => open(s));
     }
+    // Only the content carrying this existing reaction is a hover target: the last agent bubble, or the note's quoted content.
+    // It opens the same picker in the same place as pointing at the circle (or the sticker over it): only the target is larger
+    // (the user: "It should not change. It should be exactly the same as where it is now").
+    const bubble = host.matches('.qb') ? host : host.closest('.pn-note-target')?.querySelector('.pn-note-content');
+    rx._hoverHost = bubble;
+    if (bubble) hoverRx(bubble, () => open(s || rx));
     host.appendChild(rx);
   }
   addEventListener('scroll', () => { if (rxFor) closeRx(); }, { passive: true });
   const counts = () => { thrSync(); nudgeSync(); sentUi(); };
-  function select(id, atTop = false) { if (sel !== id) animateLine = true; sel = id; threadTop = atTop ? id : null; toward = null; renderRows(); }
+  function select(id, atTop = false) {
+    tieId = null;
+    if (sel !== id) animateLine = true; sel = id; threadTop = atTop ? id : null; toward = null; renderRows();
+    doneShow(id);
+  }
+  // under Done the list scrolls on its own: the picked thread comes into view in it, whether picked in the column, by the
+  // arrows or by the bar's "N open" (askGo; the user, 2026-11-20: "clicking '# open' on a done page appears to not scroll to
+  // the thread": through 1.153.7 only a row picked through select did)
+  function doneShow(id) {
+    if (WRAP.classList.contains('pn-done') && id) requestAnimationFrame(() => col.querySelector(`.pnN-row[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'nearest' }));
+  }
   // nothing picked: the rows stack from the top again, so ones slid above the page's top come back (the user: "became unable
   // to de-select it or scroll higher in col3")
   // its Reply box lets go too: kept, the redraw handed it the focus back, which picked the row again and pushed the column
@@ -5889,24 +6290,53 @@
       e.stopPropagation(); const full = button.getAttribute('aria-expanded') !== 'true';
       const old = [...row.querySelectorAll(':scope > .b.nw')];
       old[0].insertAdjacentHTML('beforebegin', noteWords(a, full)); old.forEach((x) => x.remove());
-      noteGist(row, a); layout(true);
+      noteGist(row, a); tick([...row.querySelectorAll(':scope > .b.nw')].pop(), 'q:' + a.id + ':source', true); threadDates(row, a); layout(true);
     };
   }
-  // "multiple bubbles of replies": a blank line starts the next; typing stays in one bubble
-  const agentBubbles = (a, live = false) => (live ? [dots()] : String(a.text).trim().split(/\r?\n\s*\r?\n/).map((t) => linked(t.trim())))
-    .map((t) => `<div class="qb${live ? ' ty' : ''}">${t}</div>`).join('');
-  // a click goes to the part as the Outline does; the Notes footer holds the return control clear of the page's words
-  let backTo = null;
-  const backBtn = el('<button type="button" class="pn-btn pn-bk" hidden>Back to thread</button>');
-  ovBox.prepend(backBtn);
+  // Each question gets its own bold bubble; explanations keep their paragraph groups. Code and quoted punctuation stay intact.
+  function agentParts(text, questionThread = false) {
+    const parts = [];
+    const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity:'sentence' }) : null;
+    for (const paragraph of String(text || '').trim().split(/\r?\n\s*\r?\n/).filter(Boolean)) {
+      // Ignore punctuation inside code/quotes when choosing boundaries; render the original slices.
+      const masked = paragraph.split(''); let code = false, quote = '';
+      for (let i = 0; i < paragraph.length; i++) {
+        const c = paragraph[i], escaped = i > 0 && paragraph.charCodeAt(i - 1) === 92;
+        if (c === '`' && !quote && !escaped) { code = !code; continue; }
+        if (code) { if (/[.!?？。！]/u.test(c)) masked[i] = 'x'; continue; }
+        if (quote) { if (c === quote && !escaped) quote = ''; else if (/[.!?？。！]/u.test(c)) masked[i] = 'x'; continue; }
+        const close = c === '“' ? '”' : c === '‘' ? '’' : c === '"' ? '"' : c.charCodeAt(0) === 39 ? c : '';
+        const apostrophe = /[\p{L}\p{N}]/u.test(paragraph[i - 1] || '');
+        if (close && !escaped && !apostrophe && paragraph.indexOf(close,i + 1) >= 0) quote = close;
+      }
+      const plain = masked.join('');
+      const ranges = segmenter ? [...segmenter.segment(plain)].map((s) => [s.index,s.segment.length]) : [...plain.matchAll(/.+?(?:[.!?]\s+|$)/gu)].map((m) => [m.index,m[0].length]);
+      const sentences = ranges.map(([at,n]) => ({ text:paragraph.slice(at,at + n), plain:plain.slice(at,at + n) }));
+      let prose = '';
+      const flush = () => { if (prose.trim()) parts.push({ text:prose.trim(), question:false }); prose = ''; };
+      for (const sentence of sentences) {
+        const t = sentence.text.trim();
+        if (/[?？][”’"'»)\]]*$/u.test(sentence.plain.trim())) { flush(); parts.push({ text:t, question:true }); }
+        else prose += (prose && !/\s$/.test(prose) ? ' ' : '') + sentence.text;
+      }
+      flush();
+    }
+    if (questionThread && parts.length && !parts.some((p) => p.question)) parts[parts.length - 1].question = true;
+    return parts;
+  }
+  // Only the shown bubbles split. Stored words, copied threads and the final bubble's reaction stay unchanged.
+  const agentBubbles = (a, live = false) => {
+    const parts = live ? [{ text:dots(), question:false }] : agentParts(a.text, !a.reply && !a.upd);
+    if (!parts.length) parts.push({ text:'', question:false });
+    return parts.map((p) => `<div class="qb${live ? ' ty' : ''}${p.question ? ' pn-question' : ''}" data-age="${PN.fromRound(a) ? 'prior' : 'current'}">${live ? p.text : linked(p.text)}</div>`).join('');
+  };
+  // Section links use the same document navigation as the Outline.
   ROOT.addEventListener('click', (e) => {
     const go = tgt(e).closest?.('.pn-go'); if (!go) return;
     e.stopPropagation();
     const n = partNamed(go.dataset.to); if (!n) return;
-    backTo ??= scrollY; backBtn.hidden = false; relayoutSoon();
     PN.jump(n, labelOf(n));
   }, true);
-  backBtn.onclick = () => { const y = backTo; backTo = null; backBtn.hidden = true; relayoutSoon(); goTo(y); };
   function marker(id, title, k) {   // a reaction shows as its sticker, else the comment icon
     const mk = el(`<button type="button" class="pnN-mk${REACT[k] ? ' stk' : ''}" data-id="${esc(id)}" title="${esc(title.slice(0, 80))}">${REACT[k] ? PN.art(k) : icon('ChatIcon')}</button>`);
     mk.onclick = () => { sel = id; animateLine = true; setNotes(true); renderRows(); };
@@ -5966,9 +6396,9 @@
       const target = el(`<div class="pn-note-target"><div class="pn-note-content">${media}${n.quote || !media ? `<div class="q">${esc(n.quote || n.block || 'Page')}</div>` : ''}</div></div>`);
       if (REACT[n.react] || !old) {
         const spot = el('<div class="pn-note-rx"></div>');
+        target.append(spot);   // its quoted-content hover host exists before the picker hooks are attached
         if (REACT[n.react]) spot.append(sticker(n));
         if (!old) stickerSpot(spot, () => n, 'React to content');
-        target.append(spot);
       }
       row.append(target);
       if (n.id === editing) {
@@ -6010,6 +6440,7 @@
       if (fl.length) { const at = row.querySelector(':scope > .b, :scope > .pnF-box'); if (at) at.before(...fl); else row.append(...fl); }
       if (!row.querySelector(':scope > .b, :scope > .pnF-box')) row.classList.add('bare');
       row.addEventListener('click', (e) => { if (e.target.closest('textarea,button')) return; select(n.id); });
+      threadDates(row, null, n);
       col.append(row, marker(n.id, n.text || REACT[n.react]?.[1] || '', n.react));
     });
     // a part typed into: its new text, with an undo back to the page's own text
@@ -6099,9 +6530,11 @@
         + `<span class="ph">Reply</span><span class="tx"><span class="w">${esc(a.ew.slice(0, n))}</span><span class="cr"></span></span></div></div></div>` : '')
       + `<div class="ew-f ew-ans${step < 2 ? ' shut' : ''}"><div>${userBubbles(a.ew, ' was', { cls: ' tb', html: `<div class="qk" role="img" aria-label="Answered">${PN.art('check')}</div>` })}<div class="ew-src">Answered in chat</div></div></div></div></div>`);
     noteGist(row, a);
+    tick([...row.querySelectorAll(':scope > .b.nw')].pop(), id + ':source', true);
     if (x && REACT[x.react]) lastQb(row).appendChild(sticker(x));
     row.querySelector('.ew-re')?.addEventListener('click', (e) => e.stopPropagation());   // the cursor's to fill: a click there does nothing
     row.addEventListener('click', (e) => { if (e.target.closest('textarea,button')) return; select(id); });
+    threadDates(row, a);
     return row;
   }
   // a question row: the agent's words in a grey bubble, then the user's reply, typed in place and kept as the user types; it shows as the user's
@@ -6179,6 +6612,7 @@
     const lbl = esc(postLabel(a, held));
     const row = el(`<div class="pnN-row ask${id === sel ? ' sel' : ''}${open ? '' : ' old'}${ovq ? ' ovq' : ''}${wait ? ' wait' : ''}${pcls}" data-id="${esc(id)}">${newTag(a)}<div class="h"><span class="lbl">${lbl}</span></div>${a.quote ? `<div class="q">${esc(a.quote)}</div>` : ''}${noteWords(a)}${agentBubbles(a, live)}</div>`);
     noteGist(row, a);
+    tick([...row.querySelectorAll(':scope > .b.nw')].pop(), id + ':source', true);
     // the user's reaction goes on the agent's bubble's bottom right corner, where its Sticker button sits. Nothing in the header
     // deletes: each reply has its own Delete while the user rewrites it, and the sticker and pictures come off on their own
     const qb = lastQb(row);
@@ -6201,6 +6635,7 @@
     // the Reply box, while the thread is open and the user hasn't replied: one reply per thread, rewritten by a click on it
     if (editable && !live && !rs.length) row.append(...replyBox(a, row));
     row.addEventListener('click', (e) => { if (e.target.closest('textarea,button') || (editable && e.target.closest('.b.re'))) return; select(id); });
+    threadDates(row, a);
     return row;
   }
   // Save and Cancel under a box the user is typing in; a click on them mustn't blur the box first
@@ -6220,7 +6655,9 @@
       if (!ta.isConnected || !threadOpen(a)) return false;
       const wasOpen = openQuestion(a), n = PN.answerOf(a), t = (n.draft || '').trim(); delete n.draft;
       if (t) { PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); liftFrom(ta, id, t); }
-      save(); replying = stay && !t ? a.id : null; renderRows();
+      save(); replying = stay && !t ? a.id : null;
+      if (t && wasOpen) holdFinishedThread(id);
+      renderRows();
       if (t && wasOpen) nudgeNext(a);
       return !!t;
     };
@@ -6247,8 +6684,9 @@
       if (!document.hasFocus()) return;   // the window or tab lost focus (a tab switch, another app), not the box: the words stay here as a draft, and the box is still focused when the user is back
       if (replying === a.id) replying = null;
       if (tabbed) { tabbed = false; return; }
-      const picked = sel, wasOpen = openQuestion(a), n = state.answers[a.id], t = (n?.draft || '').trim();
-      if (t) { delete n.draft; PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); liftFrom(ta, id, t); save(); }
+      let picked = sel;
+      const wasOpen = openQuestion(a), n = state.answers[a.id], t = (n?.draft || '').trim();
+      if (t) { delete n.draft; PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); liftFrom(ta, id, t); save(); if (wasOpen && holdFinishedThread(id)) picked = null; }
       afterPress(() => { if (ta.isConnected) renderRows(); if (t && wasOpen) nudgeNext(a, picked); });
     });
     ta.addEventListener('keydown', (e) => {
@@ -6478,12 +6916,17 @@
       }
       above = open && rows.length > 0 && pos[0] < top0 - 1;
     }
+    if (hold?.positions) {
+      rows.forEach((x, i) => { if (hold.positions.has(x.id)) pos[i] = hold.positions.get(x.id); });
+      // A long saved message can grow past its former box; make room only where it is necessary.
+      for (let i = 1; i < rows.length; i++) pos[i] = Math.max(pos[i], pos[i - 1] + step(i - 1));
+    }
     // the overall questions belong to no part, so they head the column. As the page scrolls they stay in view under the
     // bar, like a sticky header, until the next row comes up to them and pushes them on up (the user: "overall questions on
     // col3 don't scroll off the page until they're hitting subsequent comments")
     const base = pos.slice(), g0 = rows.findIndex((x) => x.r.classList.contains('ovq'));
     pinned = null;
-    if (open && g0 >= 0) {
+    if (open && g0 >= 0 && !hold?.positions) {
       let g1 = g0; while (g1 + 1 < rows.length && rows[g1 + 1].r.classList.contains('ovq')) g1++;
       // a picked one the pinned group would hold under the Overall box (two long ones are taller than the room under the
       // bar): the group sits higher by just enough to show it whole, the ones above it sliding under the bar, top first if
@@ -6516,7 +6959,7 @@
     // lays out, which a scroll ending does, never during a scroll: it still scrolls with the page and leaves the window
     // with its words (1.54.1)
     const tp = open && !head && si >= 0 && typingIn(rows[si]) ? si : -1, footOf = (i) => footRoom(sy) - rows[i].h - rows[i].hang;
-    if (open && (si >= 0 || toward)) {
+    if (open && (si >= 0 || toward) && !hold?.positions) {
       const held = rows.map((x, i) => i).filter((i) => !rows[i].r.classList.contains('ovq') && (i === si || (toward && partOfRow(rows[i].id) === toward)));
       const words = (i) => rows[i].w + TIE * UI;
       if (toward && !held.some((i) => seen(words(i), sy))) toward = null;   // the user scrolled away from the part: it's let go
@@ -6580,6 +7023,8 @@
       // held at the Overall box's edge as it grows, its foot stays put while it rises: the new line shows as it comes up
       if (prev?.h && x.h > prev.h + 2) x.r.animate([{ clipPath: `inset(-60px -60px ${x.h - prev.h}px -60px)` }, { clipPath: `inset(-60px -60px ${i === tp && atFoot ? 0 : -80}px -60px)` }], { duration: 280, easing: EASE });
     });
+    // under Done the rows are one list under the summary: in page order, the order their places would have put them in
+    if (WRAP.classList.contains('pn-done')) rows.map((x, i) => [x.r, pos[i]]).sort((a, b) => a[1] - b[1]).forEach(([r], k) => { r.style.order = k + 1; });
     if (open) rows.forEach((x, i) => was.set(x.id, { y: pos[i], h: x.h })); else { was.clear(); laidOut = false; }
     if (open && rows.length) laidOut = true;
     let last = -99;
@@ -6636,7 +7081,7 @@
   // page and land clear of the top bar and the Overall box (layout, toward). Another scroll of the app's (Top, Bottom, the
   // title row) goes nowhere in particular, so it lets the last part go
   function goTo(top, label = null) {
-    threadTop = null; footHold = null; scrollHold = null; ownScroll = false;   // an explicit part jump releases the thread jump, old typing position and the user's scroll hold while preserving the draft
+    threadTop = null; footHold = null; scrollHold = null; hold = null; ownScroll = false;   // explicit navigation releases thread, typing, scroll and completed-column holds while preserving the draft
     const to = Math.max(0, Math.min(top, document.documentElement.scrollHeight - innerHeight));
     toward = label;
     scrollTo({ top, behavior: reduced() ? 'auto' : 'smooth' });
@@ -6749,9 +7194,9 @@
   }
   // where the tie runs now, in page coordinates (so scrolling never moves it): from the text (sx, sy), level to gx, then
   // curving to the row (ex, ey); brk is the bracket beside the part, dot whether the end gets a dot rather than a sticker
-  function lineTarget() {
-    if (!sel || !ui.notes) return null;
-    const row = col.querySelector(`.pnN-row[data-id="${CSS.escape(sel)}"]`); if (!row) return;
+  function lineTarget(id = tieId || sel) {
+    if (!id || !ui.notes) return null;
+    const row = col.querySelector(`.pnN-row[data-id="${CSS.escape(id)}"]`); if (!row) return;
     // The tie ends in a dot on the row's left edge, level with its anchor line.
     const rr = row.getBoundingClientRect();
     const ex = rr.left, ey = row.offsetTop - scrollY + TIE * UI;
@@ -6760,16 +7205,16 @@
     // text by a short bracket. In a table the highlight and selected note are enough when no route clears the words.
     // With no words found, the bracket marks one line at the part's heading, never its height.
     let sx, sy, brk = null, part, pr, tableRight;
-    if (isEdit(sel)) {
-      const f = editEl(sel.slice(2)) || PN.frameEditNode(sel.slice(2)); if (!f) return;
+    if (isEdit(id)) {
+      const f = editEl(id.slice(2)) || PN.frameEditNode(id.slice(2)); if (!f) return;
       part = f.closest('[data-note]') || f; pr = part.getBoundingClientRect();
-      const q = inFrame(sel) || partLine(f); if (!q) return;
+      const q = inFrame(id) || partLine(f); if (!q) return;
       sy = q.mid; brk = [q.top, q.bottom]; sx = pr.right + 10;
     } else {
-      const n = noteOf(sel) || askNote(sel); if (!n) return;
+      const n = noteOf(id) || askNote(id); if (!n) return;
       part = blockEl(n.block); pr = part ? part.getBoundingClientRect() : null;
       let mark, q;
-      for (const m of marksOf(sel)) {
+      for (const m of marksOf(id)) {
         if (m.tagName !== 'MARK') continue;
         q = [...m.getClientRects()].find((r) => r.width > 0 && r.height > 0);
         if (q) { mark = m; break; }
@@ -6777,7 +7222,7 @@
       if (mark) {
         sy = midOf(mark, q) + 1;
         // the note's own sticker on that line: the tie leaves from its far edge rather than running through it
-        const ps = ROOT.querySelector(`.pn-stk.pg[data-id="${CSS.escape(sel)}"]`)?.getBoundingClientRect();
+        const ps = ROOT.querySelector(`.pn-stk.pg[data-id="${CSS.escape(id)}"]`)?.getBoundingClientRect();
         const end = Math.max(lineEnd(mark, sy), ps && ps.width && Math.abs(ps.top + ps.height / 2 - sy) < ps.height / 2 ? ps.right - 6 : 0);
         const table = mark.closest('td,th')?.closest('table');
         if (table) {
@@ -6793,8 +7238,8 @@
           if (y != null) { brk = y > sy ? [q.top + 2, y] : [y, q.bottom - 2]; sy = y; }
         }
         if (!table) sx = end + 3;
-      } else if (inFrame(sel)) {   // words in a framed page: the tie leaves from the end of their line there
-        const fq = inFrame(sel); sy = fq.mid + 1; sx = Math.max(fq.end, fq.right) + 3;
+      } else if (inFrame(id)) {   // words in a framed page: the tie leaves from the end of their line there
+        const fq = inFrame(id); sy = fq.mid + 1; sx = Math.max(fq.end, fq.right) + 3;
       } else if (pr) {
         const q = partLine(part); if (!q) return;
         sy = q.mid; brk = [q.top, q.bottom]; sx = pr.right + 10;
@@ -6813,6 +7258,7 @@
   // that moves it (a resize, a row growing) moves it at once, or retargets a motion already under way.
   const N = 28;
   const ln = { t: null, pts: null, old: null, raf: 0, t0: 0 };
+  const selNow = () => sel;
   const easeOut = (x) => 1 - (1 - x) ** 3, easeIn = (x) => x * x;
   const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
   function curveD(t) { const dx = (t.ex - t.gx) * 0.55; return `M${t.sx} ${t.sy} L${t.gx} ${t.sy} C${t.gx + dx} ${t.sy} ${t.ex - dx} ${t.ey} ${t.ex} ${t.ey}`; }
@@ -6845,8 +7291,9 @@
     return d;
   }
   function drawLine() {
+    const sel = tieId || selNow();   // the thread the cursor is typing in has the tie meanwhile (tieId)
     links.classList.toggle('ed', isEdit(sel));
-    const t = lineTarget();
+    const t = WRAP.classList.contains('pn-done') ? null : lineTarget();   // under Done the rows are a list, beside nothing: no tie
     if (!t) { cancelAnimationFrame(ln.raf); ln.raf = 0; ln.t = ln.pts = null; links.innerHTML = ''; animateLine = false; return; }
     const go = animateLine && !reduced(); animateLine = false;
     if (go) {
@@ -7235,7 +7682,28 @@
       back(on);
     });
     const arm = () => {
-      roundTurn = () => whenWatching().then(() => (bar.classList.contains('pn-turn') ? play() : null));
+      roundTurn = async (cur) => {
+        await whenWatching(); if (!bar.classList.contains('pn-turn')) return;
+        const own = !cur;
+        if (own) { cBusy = true; cCut = false; unpark(); }
+        cur ||= cursor();
+        if (own) cNow = cur;
+        const dead = () => !bar.classList.contains('pn-turn') || (own ? cDead() : OP.over);
+        const at = spot(cur, () => rn, 0.5, 0.55);
+        try {
+          if (!cur.placed) { place(cur, entry(at(), cur.tag.offsetWidth)); opNote(cur.who || AGENT, 'enter', cur); }
+          await fly(cur, at, { over: 0, dead }); if (dead()) return;
+          press(cur); tapRing(cur.x, cur.y, cur.cls); opNote(cur.who || AGENT, 'round', cur);
+          await play(); opNote(cur.who || AGENT, 'round done');
+          if (own) await flyOut(cur);
+        } finally {
+          if (own) {
+            if (bar.classList.contains('pn-turn')) end();
+            cur.el.remove();
+            if (cNow === cur) { cBusy = false; cCut = false; cNow = null; ewArm(200); syncPark(); }
+          }
+        }
+      };
       turnNow = () => { keep(); end(); };
     };
     // Replay: the number rolls back down and the bar goes back to the look the user left; the opening turns it up again
@@ -7267,6 +7735,7 @@
   // until the layer has taken its place. An opted-in reading page can also use its 'light' or 'dark' value for its palette.
   // Nothing turns the layer off or takes it down, so nothing removes this; a framed page returns early, above, and never gets it
   document.documentElement.setAttribute('data-notes-layer', pageAppearance());
+  if (OP_ON) opCoverUp().catch((e) => { opCut(); throw e; });   // after initial responsive layout, before the first paint
   sendUsage('opened');
   requestAnimationFrame(() => requestAnimationFrame(() => { document.body.classList.add(P + 'ready'); matchPage(); }));
   document.fonts?.ready.then(rematch); addEventListener('load', rematch);

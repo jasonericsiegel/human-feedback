@@ -131,6 +131,57 @@ def new_port(root: Path, token: str) -> int:
     raise ValueError("no local review port was available")
 
 
+def stop_worker(port: int, token: str) -> None:
+    """Stop this review's worker on its port. Only a local_review.py process started with this token is stopped."""
+    try:
+        pids = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"], capture_output=True, text=True,
+                              timeout=5).stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        return
+    for pid in pids:
+        try:
+            args = subprocess.run(["ps", "-o", "args=", "-p", pid], capture_output=True, text=True,
+                                  timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if "local_review.py" in args and token in args:
+            try:
+                os.kill(int(pid), 15)
+            except (OSError, ValueError):
+                continue
+    for _ in range(20):
+        if not ready(port, token):
+            return
+        time.sleep(0.1)
+
+
+def moved_from(versions: list[dict], state_path: Path, first: Path) -> None:
+    """A review whose files moved keeps the address saved under its first page's old path, so the tab and notes carry over.
+    The old path is absolute outside a repo and repo-relative inside one (add_notes.page_id). A worker still running
+    for the old folder is stopped, so the saved address restarts on the new folder instead of serving 404s."""
+    old = versions[0].get("page") if versions else None
+    if not isinstance(old, str):
+        return
+    old_path = Path(old)
+    if not old_path.is_absolute():
+        top = add_notes.git_top(first.parent)
+        if top is None:
+            return
+        old_path = top / old_path
+    saved = saved_address(old_path)
+    if saved == state_path or not saved.is_file():
+        return
+    text = saved.read_text(encoding="utf-8")
+    add_notes.write_sidecar(state_path, text)
+    try:
+        state = json.loads(text)
+        port, token = state.get("port"), state.get("token")
+    except (ValueError, AttributeError):
+        return
+    if type(port) is int and isinstance(token, str) and TOKEN.fullmatch(token) and ready(port, token):
+        stop_worker(port, token)
+
+
 def preview(page: Path, siblings: set[str]) -> str | None:
     """Get the address for an eligible review. Existing file reviews keep their address."""
     if fcntl is None:
@@ -146,6 +197,8 @@ def preview(page: Path, siblings: set[str]) -> str | None:
     state_path = saved_address(first)
     pages = {page, *(Path(sibling) for sibling in siblings)}
     fits = narrow_root(root) and all(p.is_relative_to(root) and compatible(p, root) for p in pages if p.is_file())
+    if mode == "http" and not state_path.exists():
+        moved_from(versions, state_path, first)
     if mode == "http" and not state_path.exists():
         raise ValueError("the saved local review address is missing")
     if not state_path.exists() and (not fits or attrs.get("src") != add_notes.ASSET.as_uri()

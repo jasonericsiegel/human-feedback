@@ -6,7 +6,7 @@ human-feedback is a free skill for Claude Code, Codex, and other AI agents. When
 npx skills add jasonericsiegel/human-feedback
 ```
 
-![A review page titled 8 Days in Thailand. The outline on the left nests each day under Krabi or Bangkok, the trip page is in the middle, and the notes are on the right. The human's Mac cursor sits beside selected words and the Comment, Edit, and Highlight action pill. A held heart sticker throws little hearts beside "a short walk from the sand", joined by a line to its note. Codex's magenta cursor works on Day 2, and Claude's violet cursor is typing a question into a new thread.](media/human-feedback-review-page.png)
+![A review page titled 8 Days in Thailand. The outline on the left nests each day under Krabi or Bangkok, the trip page is in the middle, and the notes are on the right. The human's Mac cursor sits beside selected words and the Comment, Edit, and Highlight action pill. A held heart sticker throws little hearts beside "a short walk from the sand". Codex's magenta cursor works on Day 2, and Claude's violet cursor is typing a question into a new thread, joined by a line to "ride to the beach hotel".](media/human-feedback-review-page.png)
 
 ## Types of things you can review
 
@@ -17,7 +17,9 @@ npx skills add jasonericsiegel/human-feedback
 
 You can also react with an emoji, highlight words, or rewrite text.
 
-## What gets pasted back
+## Key features
+
+### What gets pasted back
 
 When you press **Copy**, your notes become plain text for your agent's chat. For the trip above, it looks like this:
 
@@ -62,6 +64,49 @@ Notes on Round 2 "Later boat" (latest)
 ```
 
 Your agent makes the next version of the page and answers each note under it. Each version is a round, and a note with its answers is a thread. Every round stays, so you can step back to any of them.
+
+### Your agent's cursor
+
+Each round opens with a cursor carrying your agent's name. It brings in the new version's changes and types its answers into your notes, so you can watch it work. Replay plays it again.
+
+![Claude's named cursor beside the answer it has just typed into a note thread](media/touch-cursor.png)
+
+### Edit in place
+
+Rewrite a sentence where it sits. Your agent gets what you removed and added, and ⌘Z takes it back.
+
+![A rewritten phrase on the page as struck-through old words and new words, with an undo arrow in the notes](media/touch-edit.png)
+
+### The next thread comes to you
+
+Answer one and the page moves to the next one still open.
+
+![After the first of three threads is answered, the next one is highlighted with its Reply box ready](media/touch-next-thread.png)
+
+### Bigger reactions
+
+Hold an emoji down and it doubles in impact and animates.
+
+![A held 🎉 reaction grown into a large sticker with confetti beside the highlighted words](media/touch-reactions.png)
+
+<details>
+<summary>Every small touch</summary>
+
+- **Start typing.** Select some words and type, and a comment opens with what you typed.
+- **See what changed.** Your agent can mark the main changes it made from your notes, each with a green Updated label and a line on what changed.
+- **Questions stand out.** Your agent's questions have a dot while they wait for your answer.
+- **Dates on every message.** Messages in a thread are grouped by day. Point at a date for the full time.
+- **The title stays in view.** Scroll past the page's heading and its title stays at the top of the reading column.
+- **Highlight.** Mark words in yellow for yourself, with no note.
+- **Short versions of long notes.** Your agent can show a summary of a long note. See original shows your exact words, and Copy always sends them.
+- **Ticks.** Copied notes get one tick, and a second once your agent has them.
+- **Your layout, remembered.** Fold away the outline or the notes, and switch them between light, dark, and auto.
+- **The outline follows you.** It marks the part you're reading.
+- **Small windows.** In a narrow window, your notes open as a sheet.
+- **Saved as you type.** Close the tab and your notes are still there.
+- **Keyboard shortcuts.** ⌥↑ and ⌥↓ step through the threads.
+
+</details>
 
 ## Before you install
 
@@ -155,36 +200,9 @@ Then:
 2. Add an overall note at the bottom of your notes if you want.
 3. Press **Copy** and paste into your agent's chat.
 4. The next round opens with an answer under each note. The arrows at the top of your notes step back through every round.
+5. When nothing is left to settle, your agent marks the review Done. A summary of what it did, the final file, and next steps sits at the top of your notes, with that round's threads under it.
 
-Your agent may also open a page on its own when it wants you to review or choose something. If you'd rather it only did that when you ask, tell it so.
-
-## Small touches
-
-<table>
-<tr>
-<td width="50%" valign="top"><img src="media/touch-cursor.png" alt="Claude's named cursor beside the answer it has just typed into a note thread"><br><b>Your agent's cursor.</b> Each round opens with a cursor carrying your agent's name. It brings in the new version's changes and types its answers into your notes, so you can watch it work. Replay plays it again.</td>
-<td width="50%" valign="top"><img src="media/touch-reactions.png" alt="A held 🎉 reaction grown into a large sticker with confetti beside the highlighted words"><br><b>Bigger reactions.</b> Hold an emoji down and it doubles in impact and animates.</td>
-</tr>
-<tr>
-<td width="50%" valign="top"><img src="media/touch-next-thread.png" alt="After the first of three threads is answered, the next one is highlighted with its Reply box ready"><br><b>The next thread comes to you.</b> Answer one and the page moves to the next one still open.</td>
-<td width="50%" valign="top"><img src="media/touch-edit.png" alt="A rewritten phrase on the page as struck-through old words and new words, with an undo arrow in the notes"><br><b>Edit in place.</b> Rewrite a sentence where it sits. Your agent gets what you removed and added, and ⌘Z takes it back.</td>
-</tr>
-</table>
-
-<details>
-<summary>Every small touch</summary>
-
-- **Start typing.** Select some words and type, and a comment opens with what you typed.
-- **Highlight.** Mark words in yellow for yourself, with no note.
-- **Short versions of long notes.** Your agent can show a summary of a long note. See original shows your exact words, and Copy always sends them.
-- **Ticks.** Copied notes get one tick, and a second once your agent has them.
-- **Your layout, remembered.** Fold away the outline or the notes, and switch between light, dark, and auto where the page offers it.
-- **The outline follows you.** It marks the part you're reading.
-- **Small windows.** In a narrow window, your notes open as a sheet.
-- **Saved as you type.** Close the tab and your notes are still there.
-- **Keyboard shortcuts.** ⌥↑ and ⌥↓ step through the threads.
-
-</details>
+Your agent may also open a page on its own when it wants you to review or choose something, has three or more questions for you, or finishes a document or design for you. If you'd rather it only did that when you ask, tell it so.
 
 ## How it compares
 
@@ -217,7 +235,7 @@ Here's what you can do in each way of reviewing your agent's work:
 
 **Compared with replying in chat:** You select the words you want to comment on and type beside them, then send every note in one paste. Earlier rounds stay a click away.
 
-**Compared with Claude Docs:** Works with Claude Code, Codex, and other agents, needs no account, and shows the page or mockup your agent actually build in a beautiful, easy to use interface.
+**Compared with Claude Docs:** Works with Claude Code, Codex, and other agents, needs no account, and shows the page or mockup your agent actually built in a beautiful, easy to use interface.
 
 ## Better together
 

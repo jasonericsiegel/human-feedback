@@ -66,7 +66,18 @@ R1. [Option B · Calm] "the rounded corners"
 - `Overall:` is about the whole page.
 - `Qn.` is one of your `--ask` questions, as you asked it, with their reply under it; `(no answer)` means the user left it; if the decision still needs their input, put the question in the relevant part of the page (SKILL.md step 6). `(answered by notes on this part)` means the user left no reply but left notes or reactions on that part, which closed the question: read the notes with that `[Label]` as the answer, and if they don't answer it, put the question in that part of the page. A reply can start with a reaction emoji (👍 or 👍👍), read the same way as on a note. The user replies once per thread: once the user has, the Reply box goes, and the user changes their reply by clicking it. A copy from before 1.83.0 can hold several, each its own `Answer:` line, oldest first.
 - `[[Part label]]` in your own words (`Qn.` or `You replied:`) is a link you wrote to that part. Pass it back unchanged when a command asks for the question as asked.
-- `Rn.` is one of your `--reply` answers: `Note:` is their note, `You replied:` your answer, and `Answer:` what the user said back (words, a reaction emoji, or both), one `Answer:` line (several only in a copy from before 1.83.0). Replies the user didn't answer aren't copied.
+- `Rn.` is one of your `--reply` answers: `Note:` is their note, `You replied:` your answer, and `Answer:` what the user said back (words, a reaction emoji, or both), one `Answer:` line (several only in a copy from before 1.83.0). Replies the user didn't answer aren't copied. An `Answer:` that asks a new question gets its own `--reply`, built from the answer's words (SKILL.md step 7).
+
+When the user responded to one of your `--updated` or `--added` threads, a `Your updates` block follows:
+
+```
+Your updates
+
+U1. [Pricing] "two months free" Annual now shows its saving: two months free.
+   Answer: 👍
+```
+
+- `Un.` is one of your `--updated` or `--added` threads, with the user's response under it. A 👍 or other reaction says the user saw the change. Words may ask for more: handle them like a note. Updates the user left alone aren't copied, and nothing needs doing for them.
 
 On a page with versions, the copied text gathers this round's notes from every version:
 

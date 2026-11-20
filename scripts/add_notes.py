@@ -9,6 +9,8 @@
     python3 add_notes.py <page.html> --ask "A question?" --ask '[Part label] "quote" A question?'
     python3 add_notes.py <page.html> --reply '[Part label] "quote" their note' "Your answer."
     python3 add_notes.py <page.html> --gist '[Part label] "quote" their note' "Their words, cut short."
+    python3 add_notes.py <page.html> --updated '[Part label] "quote" What changed.'
+    python3 add_notes.py <page.html> --added '[Part label] "quote" What was added.'
     python3 add_notes.py <page.html> --done '[Part label] "quote" their note'
     python3 add_notes.py <page.html> --answered '[Part label] "quote" your question' "Their answer from chat."
     python3 add_notes.py <page.html> --received
@@ -105,6 +107,15 @@ questions or replies, and takes the old thread out of the carry, so it never sho
 its words make it a different question, so the old one would carry beside it. It adds to --ask and --reply, and to a
 plain re-run's lists; each thread once.
 
+Changes: --updated marks changed content; --added marks a part added in response to the user's notes:
+'[Part label] "quote" one line on what changed or was added'. Each is a thread: New for an added part, Updated for
+changed content. New wins for every change thread on a part marked --added, even when --updated also names it. Questions
+have no New pill; the purple open dot and counts still mark open threads. Change threads stay open until the user responds
+(any reaction will do), so Copy's reminder catches one the user passed over; responses go in Your updates. Both flags need
+a part, as a question does. A run with either replaces the whole change list: pass all --updated and --added entries
+together (data-updated, [{id, block, quote, text, added?}]). A plain re-run keeps it; a new version or --next-round starts
+with none. They are never carried, so one the user left goes with its round.
+
 Previous version: a new version (--new-version, or --after) also writes .<new page file>.prev.js beside it, once, calling
 PN_PREV with {from, at, html}: the version before it as it was then, minus the tag, hold style and scripts, for the wipe.
 
@@ -127,7 +138,8 @@ and the summary: each --what-changed is one bullet of What we did across all ver
 "We"; it warns about any that doesn't, and about more than 5), and each --next-step is one thing to do next
 (optional; it warns about any that doesn't start with "You" or "Your agent"). --what-didnt is no longer used:
 accepted and ignored with a warning. The page's bar reads Done and the summary covers their
-notes; their Unlock reopens the loop. A new version (--after) or --next-round takes the done back. It runs on
+notes column, with every thread of the round listed under it; their Unlock reopens the loop. It stops, naming them, while a
+question of the agent's went to the page after the user's last paste (--received): the user hasn't answered it yet. A new version (--after) or --next-round takes the done back, and so does --reopen, which deletes the done files and nothing else, for a Done the user didn't mean to give. It runs on
 its own and leaves the tag alone.
 
 Hold: --hold readies the page without opening it; it changes nothing on the page.
@@ -138,14 +150,16 @@ made inside the frame reaches the page's notes. A framed page with notes of its 
 Hold style: every run records in the tag when it wrote it (data-made; HF_MADE=<ISO time> sets it instead, for tests
 that need a round made earlier). It also puts a small style in the page's <head>, between
 <!-- human-feedback hold --> markers, on every round and version, that hides the page from its first paint until the
-layer takes over: opened within 10 minutes of the run, the layer writes the page in front of the user, and otherwise shows
-it at once. A CSS timeout shows the page after 4 s if the layer never loads.
+layer takes over. Round one shows a quiet skeleton while it waits; later rounds keep the previous opening. An unseen
+round waits for the user to visit it. A CSS timeout shows the page after 4 s if the layer never loads.
 """
 
 from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stdout
+import ctypes
+import ctypes.util
 import hashlib
 import html
 from html.parser import HTMLParser
@@ -187,6 +201,9 @@ HEAD_OPEN = re.compile(r"<head\b[^>]*>|<html\b[^>]*>", re.I)
 HOLD_STYLE = ("<!-- human-feedback hold --><style>html:not(.hf7k3-drawn) body{visibility:hidden;"
               "animation:hf7k3-hold 0s 4s forwards}@keyframes hf7k3-hold{to{visibility:visible}}</style>"
               "<!-- /human-feedback hold -->\n")
+# The first round has a skeleton even before its script loads. Pseudo-elements live outside the hidden body;
+# the same four-second fail-open timeout removes them if the layer never arrives. Later rounds keep their old hold.
+FIRST_HOLD_STYLE = HOLD_STYLE.replace("</style>", """html:not(.hf7k3-drawn)::before{content:"";position:fixed;z-index:2147480600;left:max(24px,calc((100vw - 680px)/2));top:64px;width:min(680px,calc(100vw - 48px));height:430px;pointer-events:none;--hf-sk:#e6e6ea;background:linear-gradient(var(--hf-sk),var(--hf-sk)) 0 0/72% 32px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 72px/100% 13px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 103px/87% 13px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 134px/64% 13px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 216px/47% 21px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 274px/100% 13px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 305px/87% 13px no-repeat,linear-gradient(var(--hf-sk),var(--hf-sk)) 0 336px/64% 13px no-repeat;animation:hf7k3-prepaint 0s 4s forwards}html:not(.hf7k3-drawn)::after{content:"";position:fixed;z-index:2147480601;left:max(24px,calc((100vw - 680px)/2));top:64px;width:min(680px,calc(100vw - 48px));height:430px;pointer-events:none;background:linear-gradient(100deg,transparent,rgba(255,255,255,.55),transparent);animation:hf7k3-prepaint-sheen 1.8s ease-in-out infinite,hf7k3-prepaint 0s 4s forwards}@keyframes hf7k3-prepaint{to{visibility:hidden}}@keyframes hf7k3-prepaint-sheen{from{opacity:0;transform:translateX(-55%)}30%,70%{opacity:1}to{opacity:0;transform:translateX(55%)}}@media(prefers-color-scheme:dark){html:not(.hf7k3-drawn)::before{--hf-sk:#343438}html:not(.hf7k3-drawn)::after{background:linear-gradient(100deg,transparent,rgba(255,255,255,.08),transparent)}}@media(prefers-reduced-motion:reduce){html:not(.hf7k3-drawn)::after{display:none}}@media(max-width:600px){html:not(.hf7k3-drawn)::before,html:not(.hf7k3-drawn)::after{top:48px}}</style>""")
 LABEL = re.compile(r"""data-note(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?""")
 # A copied header keeps its whole quote up to the line break, before any reaction or image/edit marker.
 # With words on the same line, keep the first closing quote; a marker alone can end a copied header too.
@@ -195,7 +212,7 @@ ASK_MARK = r'(?:[ \t]+(?:[✅❓👍👎❤️🎉]+|\(images? [^\r\n]*\)|edited
 ASK_PICS = r'[ \t]+\(images? [^\r\n]*?\)(?=[ \t]*(?:"|[✅❓👍👎❤️🎉]|\r?\n|$))[ \t]*'
 ASK = re.compile(r'\s*(?:\[([^\]]+)\](?:' + ASK_PICS + r'|\s*))?(?:"([^\r\n]+(?="(?:'
                  + ASK_MARK + r'*[ \t]*\r?\n|' + ASK_MARK + r'+[ \t]*$))|[^"]+)"\s*)?\s*(.*?)\s*', re.S)
-IFRAME = re.compile(r"""<iframe\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.I)
+IFRAME = re.compile(r"""<iframe\b[^>]*?\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.I)
 # a URL with a scheme, or from the root: not a file beside the page
 REMOTE = re.compile(r"^(?:[a-z][\w+.-]*:|/)", re.I)
 COPIED = re.compile(r'^\s*(?:\d+\.\s*(?=\[|\(Round )|Overall:\s*)?(?:\(Round \d+(?:\s+"[^"]*")?\)\s*)?')   # "that's just informing you what it is that I'm providing feedback on"
@@ -323,7 +340,9 @@ def load_set(path: Path, attrs: dict) -> list[dict]:
 def first_entry(path: Path) -> dict:
     """An entry for a page that had no version list: it becomes version 1."""
     made = datetime.fromtimestamp(path.stat().st_mtime)
-    return {"path": path, "page": page_id(path), "at": stamp(made)}
+    attrs = read_tag(path.read_text(encoding="utf-8"))
+    at = attrs.get("data-at") if attrs.get("data-page") == page_id(path) else None
+    return {"path": path, "page": page_id(path), "at": at or stamp(made)}
 
 
 def versions_attr(entries: list[dict], for_page: Path) -> str:
@@ -359,7 +378,7 @@ def label_key(label: str) -> str:
     return " ".join(label.split()).casefold()
 
 
-def unplaced_asks(text: str, asks: list[str]) -> list[str]:
+def unplaced_asks(text: str, asks: list[str], flag: str = "--ask") -> list[str]:
     """--ask questions that name no part on the page. Every question sits beside the part it is about: there are
     no page-wide questions, so one with no [Part label], with [Page], or with a label the page lacks stops the run."""
     labels = part_labels(text) if asks else set()
@@ -367,11 +386,11 @@ def unplaced_asks(text: str, asks: list[str]) -> list[str]:
     for a in asks:
         block = no_page(copied_note(a)[0])
         if block is None:
-            out.append(f'--ask {a.strip()[:60]!r} names no part. Every question goes on the part it is about: '
+            out.append(f'{flag} {a.strip()[:60]!r} names no part. Every question goes on the part it is about: '
                        'give its [Part label], plus a "quote" when it is about some of its words. '
                        'There are no page-wide questions.')
         elif label_key(block) not in labels:
-            out.append(f'--ask on [{block}]: no part on the page has that label.')
+            out.append(f'{flag} on [{block}]: no part on the page has that label.')
     if out and labels:
         out.append("The page's parts: " + ", ".join(sorted(labels)))
     return out
@@ -405,6 +424,15 @@ def parse_ask(arg: str) -> dict:
     if not text:
         fail('--ask needs a question after any [Part label] or "quote"')
     return thread("q", (block, quote, text), (("block", block), ("quote", quote), ("text", text)))
+
+
+def parse_updated(arg: str, *, added: bool = False) -> dict:
+    """One --updated or --added: its [Part label], an optional "quote", then one line on the change."""
+    block, quote, text = ASK.fullmatch(arg).groups()
+    if not text:
+        flag = '--added' if added else '--updated'
+        fail(f'{flag} needs one line on the change after its [Part label] and any "quote"')
+    return thread("u", (block, quote, text), (("block", block), ("quote", quote), ("text", text), ("added", added)))
 
 
 def parse_reply(note: str, text: str) -> dict:
@@ -457,7 +485,7 @@ def parse_answered(question: str, answer: str, pool: list[dict]) -> dict:
     if not answer:
         fail('--answered needs your question as the page asked it ([Part label] "quote" question) and their answer')
     found = find_thread(question, pool, "--answered")
-    keep = ("id", "kind", "from", "block", "quote", "said", "text", "gist")
+    keep = ("id", "kind", "from", "block", "quote", "said", "text", "gist", "authoredAt")
     return {**{k: found[k] for k in keep if found.get(k)}, "answer": answer}
 
 
@@ -521,11 +549,40 @@ def listed(attrs: dict, attr: str) -> list[dict]:
 def threads(attrs: dict, origin: int) -> list[dict]:
     """The agent's threads a round hands on: those it carried itself, then its questions and replies (never its done
     marks, which ask nothing, nor one the user answered in chat), each with its kind and the round it was first asked in."""
-    keep = ("id", "block", "quote", "said", "text", "gist")
+    keep = ("id", "block", "quote", "said", "text", "gist", "authoredAt")
     closed = {x.get("id") for x in listed(attrs, "data-answered")}
-    own = [{**{k: x[k] for k in keep if x.get(k)}, "kind": kind, "from": origin}
+    entry = next((v for i, v in enumerate(listed(attrs, "data-versions")) if i + 1 == origin), {})
+    own = [{**{k: x[k] for k in keep if x.get(k)},
+            **({"authoredAt": entry.get("at") or attrs.get("data-at") or attrs["data-made"]}
+               if not x.get("authoredAt") and (entry.get("at") or attrs.get("data-at") or attrs.get("data-made")) else {}),
+            "kind": kind, "from": origin}
            for attr, kind in (("data-asks", "ask"), ("data-replies", "reply")) for x in listed(attrs, attr)]
-    return [t for t in listed(attrs, "data-carry") + own if t.get("id") not in closed]
+    result = [t for t in listed(attrs, "data-carry") + own if t.get("id") not in closed]
+    for item in result:
+        prior = next((v for i, v in enumerate(listed(attrs, "data-versions")) if i + 1 == item.get("from")), {})
+        if not item.get("authoredAt") and prior.get("at"):
+            item["authoredAt"] = prior["at"]
+    return result
+
+
+def date_messages(lists: dict, attrs: dict, when: str, round_at: str | None) -> None:
+    """Date each agent message once, preserving its id's time through re-runs and carry.
+
+    Legacy entries use the round's creation time when known; without it, their last tag write is the best available time.
+    """
+    names = ("asks", "replies", "updated", "carry")
+    previous = {x.get("id"): x for name in names for x in listed(attrs, "data-" + name)}
+    for name in names:
+        if lists.get(name) is None:
+            continue
+        items = json.loads(lists[name])
+        for item in items:
+            old = previous.get(item.get("id"))
+            if name == "carry" and not item.get("authoredAt") and not (old or {}).get("authoredAt"):
+                continue   # unknown legacy carry keeps its origin; never pretend the new round authored it
+            item["authoredAt"] = (item.get("authoredAt") or (old or {}).get("authoredAt")
+                                  or ((round_at or attrs.get("data-at") or attrs.get("data-made")) if old is not None else None) or when)
+        lists[name] = json.dumps(items, ensure_ascii=False)
 
 
 def reopened(attrs: dict) -> list[dict]:
@@ -612,6 +669,16 @@ def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int
     answered in chat, and the threads it carries from the round before (a new version takes the last version's,
     --next-round the page's own, and any other run keeps what the tag carried)."""
     asks = carried(page, attrs, args, args.ask and [parse_ask(a) for a in args.ask], "data-asks")
+    # what changed since their notes: this version's own, never carried (threads() hands on only questions and replies)
+    changes = None
+    if args.updated is not None or args.added is not None:
+        changes = list({u["id"]: u for u in ([parse_updated(u) for u in args.updated or []]
+                        + [parse_updated(u, added=True) for u in args.added or []])}.values())
+        added_parts = {label_key(u.get("block") or "") for u in changes if u.get("added")}
+        for u in changes:
+            if label_key(u.get("block") or "") in added_parts:
+                u["added"] = True   # a newly added part is New, even when --updated also names it
+    updated = carried(page, attrs, args, changes, "data-updated")
     replies = carried(page, attrs, args, args.reply and [parse_reply(*r) for r in args.reply], "data-replies")
     done = carried(page, attrs, args, args.done and [parse_done(d) for d in args.done], "data-done")
     if args.after:
@@ -638,7 +705,7 @@ def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int
     closed = json.dumps(json.loads(answered or "[]") + earlier, ensure_ascii=False)
     carrying_now = carry(base, asks, replies, closed, tuple(old["id"] for old, _ in again))
     replies, carrying_now = with_gists(replies, carrying_now, args.gist, threads(attrs, current) + base)
-    return {"asks": asks, "replies": replies, "done": done, "answered": answered,
+    return {"asks": asks, "updated": updated, "replies": replies, "done": done, "answered": answered,
             "carry": carrying_now,
             "again": [new for old, new in again if old.get("kind") == "ask"], "earlier": earlier}
 
@@ -738,11 +805,12 @@ def made_this_run(entries: list[dict], page: Path) -> str:
 
 def write_tag(path: Path, text: str, attrs: dict, downloads: str) -> str:
     """Put the one tag (src, page, round, versions, asks, replies, done, answered, carry, frame, agent, agents, made,
-    downloads, folder, pictures, appearance) into the page, replacing any old one, and the hiding style (HOLD_STYLE) in its head, on every round and version."""
-    attrs = {"downloads": downloads, **attrs}
+    downloads, folder, pictures, appearance, file) into the page, replacing any old one, and the hiding style (HOLD_STYLE) in its head, on every round and version.
+    file is the page's own absolute path, for the title row's tooltip; a page served over http can't know it."""
+    attrs = {"downloads": downloads, **attrs, "file": str(path.resolve())}
     extra = "".join(f' data-{k}="{html.escape(str(attrs[k]))}"'
-                    for k in ("page", "round", "versions", "asks", "replies", "done", "answered", "carry", "frame",
-                              "agent", "agents", "made", "downloads", "folder", "pictures", "appearance")
+                    for k in ("page", "round", "versions", "asks", "updated", "replies", "done", "answered", "carry", "frame",
+                              "agent", "agents", "at", "made", "downloads", "folder", "pictures", "appearance", "file")
                     if attrs.get(k))
     if attrs.get("analytics-url") is not None:
         extra += f' data-analytics-url="{html.escape(str(attrs["analytics-url"]))}"'
@@ -751,8 +819,12 @@ def write_tag(path: Path, text: str, attrs: dict, downloads: str) -> str:
            '<!-- /human-feedback -->\n')
     text = BLOCK.sub("", HOLD.sub("", text))
     head = HEAD_OPEN.search(text)
-    text = text[:head.end()] + HOLD_STYLE + text[head.end():] if head else HOLD_STYLE + text
-    end = BODY_END.search(text)
+    versions = listed(attrs, "versions")
+    first = not attrs.get("frame") and str(attrs.get("round", "1")) == "1" and (not versions or versions[0].get("page") == attrs.get("page"))
+    hold = FIRST_HOLD_STYLE if first else HOLD_STYLE
+    text = text[:head.end()] + hold + text[head.end():] if head else hold + text
+    ends = list(BODY_END.finditer(text))   # the last one: a page's script can hold "</body>" in a string
+    end = ends[-1] if ends else None
     text = text[:end.start()] + tag + text[end.start():] if end else text.rstrip("\n") + "\n" + tag
     path.write_text(text, encoding="utf-8")
     return text
@@ -852,9 +924,9 @@ def build_set(page: Path, attrs: dict, args) -> list[dict]:
 def kept(page: Path, a: dict, folder: str | None) -> dict:
     """What another file's tag keeps as it was when this run rewrites it: the agent's lists, name and time, and the
     folder (its own, else this run's)."""
-    return {"asks": a.get("data-asks"), "replies": a.get("data-replies"), "done": a.get("data-done"),
+    return {"asks": a.get("data-asks"), "updated": a.get("data-updated"), "replies": a.get("data-replies"), "done": a.get("data-done"),
             "answered": a.get("data-answered"), "carry": a.get("data-carry"), "agent": a.get("data-agent"),
-            "made": a.get("data-made"), "folder": a.get("data-folder") or folder,
+            "at": a.get("data-at"), "made": a.get("data-made"), "folder": a.get("data-folder") or folder,
             "pictures": last_pictures(page, a), "appearance": a.get("data-appearance")}
 
 
@@ -953,9 +1025,10 @@ def report(page: Path, text: str, round_no: int, entries: list[dict], others: li
 def waiting(tag: dict) -> str:
     """The agent's questions, replies, done marks, threads answered in chat and carried threads the tag holds, as the
     report's last words."""
-    asked, replied, done, chat, old = (len(json.loads(tag.get(k) or "[]")) for k in (
-        "data-asks", "data-replies", "data-done", "data-answered", "data-carry"))
+    asked, upd, replied, done, chat, old = (len(json.loads(tag.get(k) or "[]")) for k in (
+        "data-asks", "data-updated", "data-replies", "data-done", "data-answered", "data-carry"))
     return (f"; {asked} question{'s' * (asked != 1)}" * bool(asked)
+            + f"; {upd} update{'s' * (upd != 1)}" * bool(upd)
             + f"; {replied} repl{'ies' if replied != 1 else 'y'}" * bool(replied)
             + f"; {done} done" * bool(done)
             + f"; {chat} answered in chat" * bool(chat)
@@ -988,6 +1061,41 @@ def take_back_done(files: list[Path]) -> None:
     """A new round begins: delete the done file beside each of these pages."""
     for f in files:
         done_file(f).unlink(missing_ok=True)
+
+
+def reopen(page: Path, attrs: dict) -> str:
+    """--reopen: take back a Done the user didn't mean to give, on the page and every version of it. The page shows Done
+    only while a done file sits beside it, so a reload of the open page brings back its notes column and Copy."""
+    if not attrs:
+        fail(f"notes aren't on for {page}: run add_notes.py on it first")
+    files = version_files(page, attrs)
+    had = [f for f in files if done_file(f).exists()]
+    take_back_done(files)
+    if not had:
+        return f"human-feedback: {page} wasn't marked Done; nothing to reopen"
+    where = f"{len(files)} versions" if len(files) > 1 else "the page"
+    return (f"human-feedback: reopened, for {page} ({where}); reload the open page with show.py --reopen so it shows "
+            "the notes column and Copy again")
+
+
+def unanswered_asks(page: Path, attrs: dict) -> list[str]:
+    """The agent's questions no paste has come back for: on any version, asked (its tag written) after the last
+    --received, less the ones closed with --answered. Done would cover the user's chance to answer them."""
+    out = []
+    for f in version_files(page, attrs):
+        tag = read_tag(f.read_text(encoding="utf-8")) if f.is_file() else {}
+        closed = {x.get("id") for x in listed(tag, "data-answered")}
+        asks = [a for a in listed(tag, "data-asks") if a.get("id") not in closed]
+        if not asks:
+            continue
+        try:
+            made = datetime.fromisoformat(tag.get("data-made") or "").timestamp()
+        except ValueError:
+            continue
+        got = dot_file(f, "received.js")
+        if not got.exists() or got.stat().st_mtime < made:
+            out += [a.get("text") or "" for a in asks]
+    return out
 
 
 def converge(page: Path, attrs: dict, changed: list[str], steps: list[str]) -> str:
@@ -1081,6 +1189,27 @@ def latest_set(page: Path) -> list[dict]:
     return entries
 
 
+def _libc_clonefile():
+    try:
+        fn = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True).clonefile
+    except (OSError, AttributeError, TypeError):
+        return None
+    fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    fn.restype = ctypes.c_int
+    return fn
+
+
+_CLONEFILE = _libc_clonefile()
+
+
+def clone_or_copy(src, dst) -> None:
+    """Copy one file for a new version's folder as an APFS clone (macOS `cp -c`): it shares the original's disk space
+    until either is edited, so a round of pictures costs almost nothing. Another disk or system: a normal copy."""
+    if _CLONEFILE is not None and _CLONEFILE(os.fsencode(src), os.fsencode(dst), 0) == 0:
+        return
+    shutil.copy2(src, dst)
+
+
 def make_version(page: Path) -> tuple[Path, Path]:
     """--new-version: copy the set's latest version to the next file name, with its folder of pictures if it has one,
     and warn if the skill changed since that version was registered. Returns the new file and the one it came from."""
@@ -1108,7 +1237,7 @@ def make_version(page: Path) -> tuple[Path, Path]:
     text = old.read_text(encoding="utf-8")
     pictures = ""
     if old_dir.is_dir():
-        shutil.copytree(old_dir, new_dir)
+        shutil.copytree(old_dir, new_dir, copy_function=clone_or_copy)
         text, count = repoint(text, old_dir.name, new_dir.name)
         pictures = f"; copied {old_dir.name}/ to {new_dir.name}/ and pointed {count} reference{'s' * (count != 1)} at it"
         if not count:
@@ -1163,7 +1292,8 @@ def start_version(page: Path, args) -> Path:
     marks go in the follow-up run it prints, and the other modes are runs of their own."""
     clash = [flag for flag, given in (
         ("--after", args.after), ("--next-round", args.next_round), ("--received", args.received),
-        ("--converged", args.converged), ("--name", args.name), ("--ask", args.ask),
+        ("--converged", args.converged), ("--reopen", args.reopen), ("--name", args.name), ("--ask", args.ask), ("--updated", args.updated),
+        ("--added", args.added),
         ("--reply", args.reply), ("--done", args.done), ("--gist", args.gist), ("--answered", args.answered),
         ("--again", args.again), ("--what-changed", args.what_changed), ("--helper", args.helper), ("--owns", args.owns),
         ("--next-step", args.next_step)) if given]
@@ -1239,7 +1369,7 @@ def parse_args(argv) -> argparse.Namespace:
     ap.add_argument("--copy", action="store_true", help="load the layer from beside the page")
     ap.add_argument("--pictures", choices=("on", "off"), help="allow picture attachments (a later run keeps the setting)")
     ap.add_argument("--appearance", choices=("off", "sidebars", "page"),
-                    help="offer Auto, Light and Dark for the sidebars or the whole page (default off)")
+                    help="Auto, Light and Dark for the sidebars (the default), the whole page, or off")
     ap.add_argument("--workspace", type=Path, help="the agent's workspace folder: their attachments go in its "
                     "human-feedback/attachments/ (default: the page's repo, else the current directory's repo, else "
                     "the current directory)")
@@ -1249,6 +1379,10 @@ def parse_args(argv) -> argparse.Namespace:
     ap.add_argument("--name", help="this version's name, two or three words")
     ap.add_argument("--changed", help=argparse.SUPPRESS)   # no longer used: accepted so older commands don't fail
     ap.add_argument("--ask", action="append", help='a question on a part: \'[Part] "quote" …\'')
+    ap.add_argument("--updated", action="append", metavar="CHANGE",
+                    help='changed content from their notes (Updated pill); pass all --updated/--added entries together: \'[Part] "quote" what changed\'')
+    ap.add_argument("--added", action="append", metavar="CHANGE",
+                    help='a part added from their notes (New wins over Updated); pass all --updated/--added entries together: \'[Part] "quote" what was added\'')
     ap.add_argument("--reply", nargs=2, action="append", metavar=("NOTE", "ANSWER"),
                     help='answer one of their notes: \'[Part] "quote" their words\' "your answer"')
     ap.add_argument("--done", action="append", metavar="NOTE",
@@ -1263,6 +1397,7 @@ def parse_args(argv) -> argparse.Namespace:
                          '\'[Part] "quote" what the page asked\' "shorter words"; it replaces the old thread')
     ap.add_argument("--received", action="store_true", help="their paste reached the agent: lock what the user sent")
     ap.add_argument("--converged", action="store_true", help="the loop is done: the page says Done, with a summary")
+    ap.add_argument("--reopen", action="store_true", help="take back a Done: the page is open for notes again")
     ap.add_argument("--what-changed", action="append", metavar="CHANGE",
                     help='one bullet of What we did across all versions, starting "We" (3 to 5 in all)')
     ap.add_argument("--what-didnt", nargs=2, action="append", help=argparse.SUPPRESS)   # no longer used, likewise
@@ -1321,12 +1456,24 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
     agent = " ".join((args.agent or "").split()) or attrs.get("data-agent")   # a run without --agent keeps the last name
     if agent and len(agent) > AGENT_MAX:
         fail(f"--agent is a name, {AGENT_MAX} characters at most: {agent[:AGENT_MAX + 10]}…")
+    if args.reopen:
+        if any((args.converged, args.received, args.next_round, args.new_version, args.copy, args.after, args.name, args.ask,
+                args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.again, args.helper, args.owns,
+                args.appearance, args.what_changed, args.next_step)):
+            fail("--reopen goes on its own")
+        print(reopen(page, attrs))
+        return 0
     if (args.what_changed or args.next_step) and not args.converged:
         fail("--what-changed and --next-step go with --converged")
     if args.converged:
-        if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.reply,
+        if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
                 args.done, args.gist, args.answered, args.again, args.helper, args.owns, args.appearance)):
             fail("--converged goes on its own, with --what-changed and --next-step")
+        waiting_on = unanswered_asks(page, attrs)
+        if waiting_on:
+            fail(f"--converged: {len(waiting_on)} of your questions went to the page after their last paste, so they "
+                 "haven't answered yet: " + "; ".join(f'"{t}"' for t in waiting_on) + ". Wait for their answers. One they "
+                 "answered in chat closes with --answered; one that no longer matters, drop with a re-run without it.")
         if not args.what_changed:
             fail("--converged needs at least one --what-changed")
         warn_bullets(args.what_changed)
@@ -1336,14 +1483,15 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         print(converge(page, attrs, args.what_changed, args.next_step or []))
         return 0
     if args.received:
-        if any((args.next_round, args.copy, args.after, args.name, args.ask, args.reply, args.done,
+        if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply, args.done,
                 args.gist, args.answered, args.again, args.helper, args.owns, args.appearance)):
             fail("--received goes on its own")
         if attrs and pictures == "on":
             make_folder(feedback_folder(page, workspace, attrs))
         print(receive(page, attrs))
         return 0
-    unplaced = unplaced_asks(text, args.ask or [])
+    unplaced = (unplaced_asks(text, args.ask or []) + unplaced_asks(text, args.updated or [], "--updated")
+                + unplaced_asks(text, args.added or [], "--added"))
     if unplaced and not os.environ.get("HF_PARTLESS_ASKS"):   # the layer tests' pages from before 1.115.0 only
         fail("\n".join(unplaced))
     broken = broken_links(text, args)
@@ -1377,13 +1525,17 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
     if args.after or args.next_round:   # a new round: the agent's done no longer stands
         take_back_done([e["path"] for e in entries] or [page])
     made = made_this_run(entries, page)
+    own_attrs = attrs if attrs.get("data-page") == page_id(page) else {}
+    round_at = (made if args.next_round else own_attrs.get("data-at") or
+                next((e.get("at") for e in entries if e["path"] == page), None) or own_attrs.get("data-made") or made)
+    date_messages(lists, attrs, made, next((e.get("at") for e in entries if e["path"] == page), None))
     snapshot_previous(page, args.after)
     folder = make_folder(feedback_folder(page, workspace, attrs)) if pictures == "on" else attrs.get("data-folder")
     downloads = downloads_dir()   # Chrome's Preferences, read once for every tag this run writes
     others = sync(entries, page, round_no, folder, downloads, lists["done"], earlier)
     text = write_tag(page, text, {"src": src, "page": page_id(page), "round": round_no,
                                   "versions": versions_attr(entries, page) if entries else None,
-                                  "agent": agent, "agents": agents, "made": made, "folder": folder,
+                                  "agent": agent, "agents": agents, "at": round_at, "made": made, "folder": folder,
                                   "pictures": pictures, "appearance": appearance, "analytics-url": analytics_url, **lists},
                      downloads)
     review_file = dot_file(page, "local-review")

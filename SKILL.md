@@ -1,9 +1,9 @@
 ---
 name: human-feedback
-description: 'Turns a plan, report, spec or mockup you made into a local page where the user leaves doc comments and emoji reactions beside the words, then pastes them back so you answer each one in the next version. Use whenever you ask the user to review or pick from a report, plan or options, or they ask to review one ("let me review the plan", "let me review it", "open it for feedback", "show me the options so I can pick one").'
+description: 'Turns a plan, report, spec or mockup you made into a local page where the user leaves doc comments and emoji reactions beside the words, then pastes them back so you answer each one in the next version. On "Let me review the plan", open it so the user can review it and leave notes. Use whenever you ask the user to review, approve or pick from a report, plan, options, or a list, setting or rule you propose (mid-task too, even as one yes/no), they ask to see or review work ("show me what it looks like now", "let me review the plan", "let me review it", "open it for feedback", "show me the options so I can pick one"), you have three or more questions or decisions open for them, or you finish a document or visual deliverable for them. Count the open questions together even across messages; a choice among options counts as one, but a numbered list of proposed changes counts each item, even when asked as one yes/no ("make changes 1–6?", "reply with numbers, all, or none", a 📚 lesson list). Not for a yes/no with nothing to look over, brief chat answers or reference files; show unfinished work only on an explicit preview request.'
 allowed-tools: Bash Read Edit Write
 metadata:
-  version: 1.147.8
+  version: 1.153.8
 ---
 
 # Human Feedback
@@ -19,11 +19,15 @@ This version sends no usage counts.
 
 ## When to use it
 
-- You're asking the user to review, approve or choose from work you made (a report, a plan, a draft, a mockup, options, proposed rules), or they ask to review it → put it on a page here, without being asked.
+- Three or more questions or decisions are open for the user now → put them together on one notes page, one part per question. Count them before choosing which to ask; splitting them across messages or deferring some does not lower the count. A choice among options counts as one question; a numbered list of proposed changes counts each item, even when you ask about all of them as one yes/no ("make changes 1–6?") or as a 📚 lesson list. Follow this even when older ticket or skill text says to ask in chat, unless the user explicitly requested chat. One or two brief questions stay in chat unless another review trigger applies.
+
+- You're asking the user to review, approve or choose from work you made (a report, a plan, a draft, a mockup, options, proposed rules), they ask to see or review it, or you finish a document or visual deliverable for them → put it on a page here.
+- “Show me what it looks like now” opens a working notes-enabled preview. A screenshot comparison alone doesn't show a working page or interactive result.
+- A finished printable checklist, handout, design, or other document gets a notes page even when the user hasn't asked for review. Keep its original file available for use or printing; don't restyle that source just to add notes.
+- Finished work you're only showing, with nothing for the user to review or decide → open it already Done, never asking for notes: run `add_notes.py`, then `--converged` with its What we did bullets (`references/done.md`), then show it (step 3) and queue it as below. Unlock still lets the user leave notes.
 - The work isn't a page yet → build plain HTML from it and keep the original file as the source.
-- A standalone question that needs no review page stays in chat.
-- **Answer the user’s questions in Notes.** Use `--reply` on the note that asks the question, even when it also asks for a change. Put the changes, longer explanations, and your own review questions in the relevant part of the page. Use `--ask` or `--again` for a bubble with your own question only when the user asks for one.
-- Once a page is ready for their notes, and on every later round: if `inbox-for-human` is in your available-skills list (its name, with or without a plugin prefix), load it with the Skill tool (in Codex, open the `SKILL.md` its skill list points to) and queue the page. If it isn't, say once: "Ran without the inbox-for-human skill, which would keep this page on a review list."
+- Brief chat answers, unfinished drafts, and existing reference files stay in their usual flow. An explicit interim preview is allowed; a guide of steps the user must carry out keeps its guide-opening flow.
+- **Answer the user’s questions in Notes.** Use `--reply` on the note that asks the question, even when it also asks for a change. Put changes and longer explanations in the relevant part of the page. For your review questions and approval requests, follow step 6.
 
 ## First use
 
@@ -82,10 +86,10 @@ It adds one tag just before `</body>`, prints the round and part count, and open
 
 ### Appearance
 
-- Follow system appearance by default. Offer Auto, Light and Dark when the material under review is prose in the shared reading styles, or when the user asks for the control. Leave it off on other reviews.
-- When offering the control, use `--appearance page` if the reading column already has both palettes and you can check both. Reuse them in the same page. For a page with an independent theme, without a tested palette, or whose appearance is part of the review, use `--appearance sidebars` to switch the Outline and Notes alone. Keep screenshots and embeds as they are.
+- Every page offers Auto, Light and Dark for the Outline and Notes, with nothing to pass. Auto follows the system.
+- Use `--appearance page` to switch the reading column too when it already has both palettes and you can check both. Reuse them in the same page. Leave the reading column alone on a page with an independent theme, without a tested palette, or whose appearance is part of the review. Keep screenshots and embeds as they are.
 - In the reading column's CSS, `html[data-notes-layer="light"]` and `html[data-notes-layer="dark"]` are the explicit choices. Keep the system media query for Auto and when the page opens without the layer. The user's choice stays with this review across rounds. Other reviews start in Auto.
-- A re-run or a version copied by `--new-version` keeps the setting. Pass `--appearance off` to remove the control, or pass the intended setting again when rebuilding the file from scratch.
+- A re-run or a version copied by `--new-version` keeps the setting. Pass `--appearance off` only when the user asks to remove the control, and pass `page` again when rebuilding a page that had it.
 
 ## 3. Show it
 
@@ -95,11 +99,12 @@ For any kind of review, on every round:
 - For a local review, finish with `add_notes.py` without `--hold`. New reviews in a dedicated folder whose assets live in that folder use one local web address for all rounds, so the browser keeps its page zoom and notes. Keep the rounds and their assets in that folder or its subfolders and use relative asset paths. Link the review address the opener prints.
 - For a page already served over HTTP, prepare with `--hold --copy` and run `show.py <local page.html> --preview-url <new round's HTTP URL>`. Keep the same preview server across rounds so the opener can find the existing tab and the browser keeps the user's notes.
 - Put the page's link in your reply every round. Use your project's link format, with the opener's result to say where the page is. If the opener fails or says it left the page closed, say so and give the link.
+- Name the document by its visible title in every chat ready line, including later rounds. Use that title as the link text too, so reviews from different sessions are easy to tell apart.
 - A page whose earlier rounds or versions the user opened from `file://` → keep showing it from `file://` (`show.py` on its path) and give no localhost link, even where the project asks for one: the browser keeps the user's answers per address, so a localhost copy shows none of them and reopens threads they closed. Say in the reply why there's no link.
 
 Do this only once the page is ready for their notes.
 
-Run `add_notes.py` without `--hold` once the page is ready for their notes. Finish the page content and mark every part first. Pass any done marks and any bubbles the user requested in that run (step 5's follow-up run for a new version).
+Run `add_notes.py` without `--hold` once the page is ready for their notes. Finish the page content and mark every part first. Pass any done marks and any question or reply bubbles in that run (step 5's follow-up run for a new version).
 
 A fix you told the user is on its way holds the next version too. Show it once that fix is live.
 
@@ -135,9 +140,11 @@ python3 "$SKILL_DIR/scripts/add_notes.py" <page.html> --received
 
 `<page.html>` is the page the paste names, as a full path (the paste gives it relative to the page's repository root): on a plain page, the path after `Notes on`, without the count in brackets; on a page with versions (the paste starts `Feedback on`), any one path from the `Versions` lines. It writes a small hidden `.<page file>.received.js` beside each version, which the page reads. Their page shows Received, then Updating, while you work. Run it on every paste.
 
+Feedback on a shown page typed in chat instead of pasted ("i asked for a column per order") is a round of notes too: run `--received` on that page's latest version before anything else, then make a new version as for a paste (step 5). Their open page otherwise keeps looking untouched while you rebuild it.
+
 Then tell the user in one chat line that their notes are in and you're working on the next version. Their page only says Received, then Updating; nothing else on it changes until you show the next version (step 3), so without that line the user can't tell whether you're still working. Give no time estimate. A version that's ready but waiting on a slower part (a second option still building, a check still running): say so, and offer to show what's ready now.
 
-Handle every ask in the paste. Put edits and longer explanations in the relevant part of the next version. Answer each direct question or ❓ in a Notes reply attached to the note that asked it (step 7), including questions mixed with edit requests. Put the answer itself in the reply. If it needs more room, put the short answer in the reply and link to the details on the page. Chat gets the acknowledgment above and the short ready line of step 3. When the user shows a page or a copy only as an example of how this skill behaves, answer in chat.
+Handle every ask in the paste. Put edits and longer explanations in the relevant part of the next version. Answer each direct question or ❓ in a Notes reply attached to the note that asked it (step 7), including questions mixed with edit requests and questions in their Overall words (the first value is their Overall words alone). A ✅ or a change on the page never stands in for the answer. Put the answer itself in the reply. If it needs more room, put the short answer in the reply and link to the details on the page. Chat gets the acknowledgment above and the short ready line of step 3. When the user shows a page or a copy only as an example of how this skill behaves, answer in chat.
 
 Then read `$SKILL_DIR/references/paste-format.md` before acting on any note, on every paste: it says what each line of the copied text means, and which lines you must not act on.
 
@@ -183,14 +190,18 @@ python3 "$SKILL_DIR/scripts/add_notes.py" <new.html> --name "Floor plan"
 
 ## 6. Questions
 
-Put a question in the page section it decides, where the user can answer with a note. If the options already let the user show their choice with a note or reaction, the options are enough.
+Anchor each question to the page section it concerns, following the placement rules below. Every decision that needs the user's answer gets a question thread, even when option cards already take notes or reactions.
 
-If the user explicitly asks for a question bubble in Notes, use `--ask`:
+Use `--ask` for questions that need the user’s answer, including approval requests:
 
 ```bash
 python3 "$SKILL_DIR/scripts/add_notes.py" <page.html> --ask '[Header] Keep the title on the left?' --ask '[Option B · Calm] "the rounded corners" Should the cards match?'
 ```
 
+- Put each question in its own paragraph, separate from explanations, in both questions and replies.
+- For an approval request, ask about the concrete proposed action. Read the response in context; if it gives no clear decision, follow up before acting.
+- Mirror a Notes question in the page only when adding it suits the artifact and you’re free to edit it directly, such as a mockup you made. Use identical wording and quote that page question as its anchor. Place it where it best fits the reading flow, after relevant choices when they need to be read first.
+- Keep review questions out of material that should stay intact, such as a legal contract or quoted source document. Ask in Notes instead, quoting the existing passage it concerns when appropriate.
 - Every question goes on the part it is mostly about: give that `[Part label]`, and it sits beside the part. A question about some of the part's words also gets a `"quote"` of them (next bullet). Every note, question and reply links to one line of text: its quoted words when found, otherwise the part’s first heading, or its first line of text if it has no heading. The fallback bracket marks only that line, never the part’s height.
 - There are no page-wide question bubbles. A bubble with no `[Part label]`, with `[Page]`, or naming a part the page lacks stops the run and lists the page's parts. If a carried question no longer has a part, the script warns. Close it with `--answered` (step 7) if the user has answered. Put any question that still needs an answer in the relevant part of the page.
 - A question about some of a part's words (one paragraph, a line, a caption), not the whole part → add a `"quote"` of those exact words after the label, so the highlight marks just them. Leave the quote out, or quote the part's heading, only when the question is about the part as a whole: that decides what closes it (step 7). `add_notes.py` warns when a question or reply names a part of several paragraphs with no quote.
@@ -198,7 +209,7 @@ python3 "$SKILL_DIR/scripts/add_notes.py" <page.html> --ask '[Header] Keep the t
 - For a renewed question bubble the user requests, use `--again` (step 7). Rewording it with `--ask` creates a second thread.
 - Only ask what needs the user: a preference, or a fact you can't find. Keep each one short.
 - Before writing a question, check the project's own instructions. Do the work those instructions already assign to the agent. Report it in the relevant part of the page.
-- Never ask which option the user picks ("A or B?"): a 👍 or a note on an option's part is their pick, so the options ask for you.
+- For a choice among options, put one `--ask` on the part containing those options and quote its heading. A 👍 or a note on an option answers that decision; the question keeps it visible and in Copy's unanswered-thread reminder until then. Informational parts get no question.
 - Plain words, for every question here, every reply in step 7 and every line of the Done summary in step 8, before it goes into the page. If `deslop-writing` is in your available-skills list (its name, with or without a plugin prefix), load it with the Skill tool (in Codex, open the `SKILL.md` its skill list points to; never read its file with `cat` or `sed`) and write these words in its inline mode: its drafting rules shape each one as you write it, so there's no second pass. Never run it on their words (their notes, edits and answers): they stay exactly as the user wrote them. If it isn't listed, write plainly by this skill's own rules (short sentences, everyday words, no jargon) and say once in chat: "Ran without the deslop-writing skill, which would make my questions and replies on the page plainer. Get it at github.com/jasonericsiegel/deslop-writing." Never mention it when it's listed. Say nothing else about it when it's missing: no lead-in and no note. Say it once per job: if another skill in the same job already named it in this conversation, don't name it again. The list is the only check: don't look for its folder.
 
 ## 7. Replies and done marks
@@ -212,10 +223,11 @@ python3 "$SKILL_DIR/scripts/add_notes.py" <new.html> --name "…" \
 ```
 
 - First value (`--done`'s only value): their note as the copy gave it, `[Part label]`, any `"quote"`, then their words. Paste it exactly as copied, never shortened: a shortened label or quote can't find its part. A leading `3.`, `(Round 2 "Name")`, line breaks and a clipped quote are fine. The round is context, never their words. A note on no part is `[Page]`, or just their words.
+- Their `Answer:` under a `Qn.` or `Rn.` asks something new → the first value is that thread's `[Part label]` and `"quote"`, then their `Answer:` words in full, never the `Note:` line or your question. The page shows those words above your reply, so the user sees the question it answers; with the old note there, the reply reads as an answer to something else (2026-11-16: "i see no answer"). Any `--gist` for it shortens the answer.
 - A reply sits on the words their note quotes, with the same heading or first-line fallback as a question (step 6). Their note quotes nothing and your answer is about some of the part's words → add a `"quote"` of them after the label, as for a question (step 6).
 - Second value: your answer, short, after the plain-words pass (step 6). Say what you changed in this version, if anything. A blank line makes a separate bubble. Start a new bubble each time the answer moves to a different idea, even in an answer of two or three sentences, and keep the sentences that explain one idea together: which tickets you filed and why another item got none are two ideas, so two bubbles. This works in `--ask` and `--again` too. The last bubble holds the reaction.
 - A note of theirs longer than about two short sentences gets a `--gist '<note as copied>' "<short version>"`, one per note, repeatable in the same run. Aim for about 20 words, in their voice (first person, the words they use). Condense first: keep their own phrasing and cut the rest. Where cutting can't get it that short without losing what they meant, summarize, still in their kind of words. Keep every ask the note makes. Fix obvious typos and dictation slips ("get" for "git"). Never run the plain-words/deslop pass on it. It matches this run's replies and carried replies; no match stops the run and lists the page's notes. Each run with `--gist` replaces the page's gists, so pass them all at once; a plain re-run keeps them, and a gist carries with its thread. Their bubble shows the gist with See original under it, which opens their own words and becomes See summary; Copy keeps their note, never the gist.
-- A reply or a question can link to a part: write `[[Part label]]` in its words, with the label as the Outline shows it or the part's whole heading. The bubble shows those words as an italic link, a click goes to the part as the Outline does, and Back to thread returns the page. A label the page lacks stops the run.
+- A reply or a question can link to a part: write `[[Part label]]` in its words, with the label as the Outline shows it or the part's whole heading. The bubble shows those words as an italic link, a click goes to the part as the Outline does. A label the page lacks stops the run.
 - One `--reply` per note. Each run with `--reply` replaces the page's replies (never its questions), so pass them all at once. A plain re-run keeps them.
 - One `--done` per change-only note carried out. Each run with `--done` replaces the page's done marks (never its replies or questions); a plain re-run keeps them.
 - The user can answer a reply once. A done mark closes their note in the round where the user wrote it: stepping back to that version shows the ✅ on their original note, still read-only. It creates no row in the new round, takes no answer, and has no cursor-stamping animation. Pass `--done` in the new version's follow-up run as above; the script tells the earlier versions which notes were closed.
@@ -223,13 +235,24 @@ python3 "$SKILL_DIR/scripts/add_notes.py" <new.html> --name "…" \
 - A question or reply the user leaves unanswered carries into the next version (or `--next-round`) on its own, labelled with the round it came from, and stays until the user answers it. One the user answers there comes back in the copy like any other, after the round's name: `Q2. (Round 2 "Floor plan") [Part] …`.
 - `--new-version` and `--next-round` list earlier threads that carry forward. If the user asks to renew one in Notes, `--again '<thread as the page asked it>' "<shorter words>"` replaces the old bubble on the same part, quote and note. Repeat the flag for each bubble they asked to renew.
 - A question also closes without a reply, and isn't carried, when the user leaves a note, reaction or picture on its part in its round. Its copy reads `(answered by notes on this part)`. This holds for a question on the whole part (no quote, or a quote of the part's heading), counting notes on parts inside it. A question quoting other words closes only on a note on those words. A ❓, an edit or a highlight closes nothing. Read those notes for the answer. If the decision still needs their input, put it in the relevant part of the page.
+- Each significant change in the new version that carries out one of their notes → `--updated '[Part label] "the changed words" one line on what changed'` in the follow-up run, one per change, on the part it changed ("Annual now shows its saving: two months free."). A section or part you added in response to their notes → `--added '[Part label] "the added words" one line on what was added'` instead. Both show as threads: changed content gets Updated; an added part gets New. New takes precedence on every change thread for a part marked `--added`, even if `--updated` also names it. New never marks a new question or thread; open threads keep their purple dot and counts. Both kinds stay open until the user responds (any reaction will do), and Copy's reminder catches one the user passed over. Skip small fixes (a typo, a spacing tweak). Neither kind carries: one the user leaves goes with its round. Responses to either come back under `Your updates` (paste-format). A run with either flag replaces the whole change list: pass all `--updated` and `--added` entries together; a plain re-run keeps it. A change-only note flagged this way still gets its `--done`.
 - The user answered one of your page questions in chat instead of on the page → pass it in the next version's follow-up run (or a plain re-run when no new version is due) as `--answered '<question as asked>' "<their words>"`, so the page closes it rather than carrying it as open. A thread from an earlier version closes in that version: the new version shows no row for it. The question is exactly as you asked it (`[Part label] "quote" question`, as for `--done`); their words are what the user said ("Pro"). One `--answered` per question; each run with it replaces the list, so pass them all at once. A question it doesn't find stops the run and lists the page's questions.
 
 ## 8. Done
 
 When you believe you've converged, tell the page the loop is done rather than making another version: their paste approves and asks for nothing more ("lfg", "ship it", ✅ on everything), or the user says it's done, and no question or reply of yours is still open.
 
+Done means this review is finished, not that this round's notes are in. When the user's words say the work goes on, it isn't Done, however settled the notes are: more rounds, a later session or a ticket to continue, "keep going", "tomorrow", "next time". Apply their notes in a new version and leave it open, also when they say "wrap up" in the same breath. "Converge", "integrate" or "apply these" ask you to make the changes, not to finish. Not sure → leave it open (2026-11-19: a review was called Done on "after converging/integrating, ticket p2 @now to continue this tomorrow"; the user: "That means we're not done"). The script refuses `--converged` while a question of yours went to the page after their last paste, and names it. Done lists every thread of the round under its summary, so your last replies stay in view.
+
+Also converged:
+
+- Their paste settles everything the page asked and says nothing about continuing. Every choice has its pick, and every other note asks for a change you can make. Make those changes in a final version and call it done there. Don't open another round only so the user can confirm them.
+- A word you can't be sure of ("grown purple") gets your best reading. Say that reading in a What we did bullet, not in a question or reply that holds the loop open. Unlock reopens it if you read it wrong. Ask only when a wrong reading would cost real rework.
+- The user moves on in chat (a new ask, "wrap up") while a version you showed has had no new paste. If nothing of yours on it waits for their decision and their words don't say the work continues, call it done before you finish the session. Otherwise say in chat that it's still open (2026-11-16: dish icons r2 was left open after "do both then wrap up").
+
 Then read `$SKILL_DIR/references/done.md` and follow it, also when their approval comes with small fixes: the final version, the `--converged` run, its summary bullets, and your chat line after.
+
+Called Done when it wasn't (the user says it isn't done, or you misread them) → `python3 "$SKILL_DIR/scripts/add_notes.py" <page.html> --reopen`, then `show.py --reopen <page.html>` so their open page reloads with its notes column and Copy. It takes Done off every version and changes nothing else; never make a new version only to clear it.
 
 ## What not to do
 
@@ -237,4 +260,4 @@ Then read `$SKILL_DIR/references/done.md` and follow it, also when their approva
 - Keep answers to pasted notes in human-feedback (steps 4 and 7).
 - Don't edit `human-feedback.js` for one page. A change to how notes work goes in the skill's asset for every page.
 - Don't open or reload a page in their browser except to show a version ready for their notes (step 3). Not to load a fix to `human-feedback.js`, not to test: another session may be building their next version, and a reload of the old one looks like its answer. Test in agent-browser, and tell the user the fix shows when the user next reloads; their notes are saved.
-- Don't add notes to a Markdown file itself. One the user only reads opens in their Markdown app; one you want reviewed gets a page (see When to use it).
+- Don't add notes to a Markdown file itself. A document made for the user gets a separate notes page; an existing reference file opens in its usual app (see When to use it).
