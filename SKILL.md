@@ -3,7 +3,7 @@ name: human-feedback
 description: 'Turns a plan, report, spec or mockup you made into a local page where the user leaves doc comments and emoji reactions beside the words, then pastes them back so you answer each one in the next version. On "Let me review the plan", open it so the user can review it and leave notes. Use whenever you ask the user to review, approve or pick from a report, plan, options, or a list, setting or rule you propose (mid-task too, even as one yes/no), they ask to see or review work ("show me what it looks like now", "let me review the plan", "let me review it", "open it for feedback", "show me the options so I can pick one"), you have three or more questions or decisions open for them, or you finish a document or visual deliverable for them. Count the open questions together even across messages; a choice among options counts as one, but a numbered list of proposed changes counts each item, even when asked as one yes/no ("make changes 1–6?", "reply with numbers, all, or none", a 📚 lesson list). Not for a yes/no with nothing to look over, brief chat answers or reference files; show unfinished work only on an explicit preview request.'
 allowed-tools: Bash Read Edit Write
 metadata:
-  version: 1.157.0
+  version: 1.158.1
 ---
 
 # Human Feedback

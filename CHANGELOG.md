@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.158.1 (2026-11-23)
+
+- A new round opens left to right. Your agent's cursor brings in the Outline and the page, then turns the round number, then types its messages.
+- Each of your agent's clicks bursts two circles from the click point, in the notes too.
+- Fixed: at Done, your agent's cursor sat above the dots it was typing.
+
 ## 1.157.0 (2026-11-23)
 
 - Settled threads stop coming back. If you answered a question somewhere else, or a change made it moot, your agent closes it instead of carrying it into the next round.

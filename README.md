@@ -6,6 +6,8 @@ human-feedback is a free skill for Claude Code, Codex, and other AI agents. When
 npx skills add jasonericsiegel/human-feedback
 ```
 
+See it in action at [jasoneric.com/human-feedback](https://jasoneric.com/human-feedback/).
+
 ![A review page titled 8 Days in Thailand. The outline on the left nests each day under Krabi or Bangkok, the trip page is in the middle, and the notes are on the right. The human's Mac cursor sits beside selected words and the Comment, Edit, and Highlight action pill. A held heart sticker throws little hearts beside "a short walk from the sand". Codex's magenta cursor works on Day 2, and Claude's violet cursor is typing a question into a new thread, joined by a line to "ride to the beach hotel".](media/human-feedback-review-page.png)
 
 ## Types of things you can review

@@ -2638,7 +2638,7 @@
        (the user: "the thread should slide down ... and then the agent should do the whole typing thing for what we did").
        A section still to type keeps its space but shows nothing (wait); one being typed shows only its bubble (ty) */
     .pnN-done .pnD-g{position:relative} .pnN-done .pnD-g.wait{visibility:hidden} .pnN-done .pnD-g.ty>:not(.pnD-tb){visibility:hidden}
-    .pnN-done .pnD-tb{position:absolute;left:0;display:block;width:fit-content;box-sizing:border-box;background:var(--pn-bub);color:var(--pn-ink);font-size:14.5px;line-height:1.45;
+    .pnN-done .pnD-tb{position:absolute;left:-12px;display:block;width:fit-content;box-sizing:border-box;background:var(--pn-bub);color:var(--pn-ink);font-size:14.5px;line-height:1.45;
       padding:8px 12px 9px;border-radius:var(--pn-R2);border-top-left-radius:var(--pn-R0);pointer-events:none}
     .pnN-done .pnD-tb .td{display:inline-flex;align-items:center;gap:5px;height:21px;vertical-align:top}
     .pnN-done .pnD-tb .td i{width:7px;height:7px;border-radius:50%;background:currentColor;opacity:.28;animation:pnDots 1.2s ease-in-out infinite;animation-delay:var(--pn-ph,0ms)}
@@ -3086,7 +3086,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.157.0', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.158.1', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -4065,7 +4065,7 @@
     const box = spot(cur, () => partOf(id, '.ew-re'), 0, 0.5);
     await fly(cur, () => { const p = box(); return { x: p.x + off, y: p.y + dy }; }); alive();
     await beat(rnd(70, 170)); alive();
-    await press(cur); alive();
+    tapRing(cur.x, cur.y); await press(cur); alive();
     ewShow(id, 1);
     await type(id, a.ew, alive);
     await beat(rnd(200, 360)); alive();
@@ -4123,7 +4123,7 @@
     try {
       await fly(cur, () => { const q = at(); return { x: q.x + 7, y: q.y + 21 }; }); alive();   // its first line's start, inside the bubble's edge
       await beat(rnd(60, 140)); alive();
-      press(cur); postTap(id);
+      press(cur); tapRing(cur.x, cur.y); postTap(id);
       await beat(rnd(650, 900)); alive();   // the dots' beat
       postArrive(id);
       await beat(460); alive();   // the bubble grows into the message
@@ -4560,13 +4560,17 @@
     return textStart(document.body) || { x: b.left + parseFloat(cs.paddingLeft), y: clamp(b.top + parseFloat(cs.paddingTop), 24, innerHeight / 3) };
   }
   function tapRing(x, y, cls) {
-    const r = el(`<div class="pnRg${cls ? ' ' + cls : ''}"></div>`); r.style.left = x + 'px'; r.style.top = y + 'px'; WRAP.appendChild(r);
-    goneAfter(r.animate([{ opacity: 0.7, transform: 'scale(.3)' }, { opacity: 0, transform: 'scale(1.6)' }], { duration: 420 * SLOW, easing: 'cubic-bezier(.2,.7,.25,1)' }), r);
+    // two rings burst from the click point, one inside the other (the user, 2026-11-23: "when the agent clicks, there needs to
+    // be concentric circles that explode on the click point")
+    [2.1, 1.4].forEach((to, i) => {
+      const r = el(`<div class="pnRg${cls ? ' ' + cls : ''}"></div>`); r.style.left = x + 'px'; r.style.top = y + 'px'; WRAP.appendChild(r);
+      goneAfter(r.animate([{ opacity: 0.9, transform: 'scale(.2)' }, { opacity: 0, transform: `scale(${to})` }], { duration: 600 * SLOW, delay: i * 100 * SLOW, easing: 'cubic-bezier(.2,.7,.25,1)' }), r);
+    });
   }
   // ---------- agents do only what they own (the user, on round 3: "each
   // agent can't misrepresent what they owned ... they should move independently ... except that the key actions need to
   // happen in sequence"; the user "loves it"). add_notes.py --helper and --owns write who helped and what each made into the tag
-  // (data-agents). The key actions keep their order: the round number, then the Outline and page together, then the notes.
+  // (data-agents). The key actions keep their order: the Outline and page together, then the round number, then the notes (the user, 2026-11-23: "write down columns 1 and 2 first, and then change the round number second").
   // Between them each agent moves on its own: it comes in when it likes, waits only for the key action before its own, and
   // leaves once its last job is done. The round number is a helper's (the first with nothing of its own in view, else the
   // first); the Outline is the lead's; on the page each agent wipes only its own parts in view, each with its own edge, so two
@@ -4667,7 +4671,7 @@
       }
       const q = lead[0]; return { x: opStart().x, y: clamp(q.s0 + 24, 24, H - 40) };
     };
-    // the key actions' gates: the round turned, the shared Outline/page wipe started, each share of the page at its bottom
+    // the key actions' gates: the shared Outline/page wipe started, each share of the page at its bottom, the round turned
     const G = { turn: gate(), outline: gate(), lead: gate() }, ends = bands.map((bs) => bs.map(() => gate())), pageDone = [];
     if (turnBy < 0) G.turn.open();
     const cur = OP.cur = cursor();
@@ -4676,7 +4680,6 @@
     (async () => {
       try {
         await beat(rnd(0, 1500)); if (dead()) return;
-        await G.turn; if (dead()) return;
         const at = lead.length ? leadStart() : opStart();
         await flyIn(cur, at); if (dead()) return;
         press(cur); tapRing(at.x, at.y); opNote(AGENT, 'page', cur);
@@ -4688,16 +4691,15 @@
         await w.bottom; opNote(AGENT, 'page bottom'); if (ol) opNote(AGENT, 'outline bottom');
       } finally { G.outline.open(); G.lead.open(); }
     })();
-    // each helper: the round number if it's its job, then its own parts in view; then it goes, whatever the others are doing
+    // each helper: its own parts in view, then the round number if it's its job; then it goes, whatever the others are doing
     const helperDone = HELPERS.map((a, i) => (async () => {
       const mine = bands[i], turn = i === turnBy;
       try {
         if (!mine.length && !turn) return;
-        await beat(turn ? rnd(0, 700) : rnd(150, 1700)); if (dead()) return;
+        if (mine.length) { await beat(rnd(150, 1700)); if (dead()) return; }
+        const pageAll = () => Promise.all([G.lead, ...ends.flat()]);
+        if (!mine.length) { await pageAll(); await beat(rnd(0, 400)); if (dead()) return; }   // only the round is its job: it comes once the page is in
         const h = agCursor(i);
-        if (turn) {
-          await roundTurn(h); G.turn.open(); if (dead()) return;
-        }
         for (let k = 0; k < mine.length; k++) {
           const b = mine[k];
           await flyIn(h, b.at); if (dead()) return;
@@ -4707,14 +4709,15 @@
           const w = wipeRun(b.at.y, b.s1, edgeOf(i, b)); pageDone.push(w.done);
           await w.bottom; opNote(a.name, 'part bottom:' + PN.blockLabel(b.n)); ends[i][k].open(); if (dead()) return;
         }
+        if (turn) { await pageAll(); if (dead()) return; await roundTurn(h); G.turn.open(); if (dead()) return; }   // the round, once every share of the page is in
         await beat(rnd(60, 260)); if (dead()) return;
         const away = exit(h); leave(h); opNote(a.name, 'leave');
         await fly(h, () => away, { over: 0, pace: rnd(0.8, 0.95), dead: () => false });
         h.el.remove(); AG_LIVE.delete(h);
       } finally { ends[i].forEach((e) => e.open()); if (turn) G.turn.open(); }
     })());
-    // the notes wait for every share of the page to reach its bottom
-    await Promise.all([G.lead, ...ends.flat()]);
+    // the notes wait for every share of the page to reach its bottom, then for the round to turn
+    await Promise.all([G.lead, ...ends.flat()]); await G.turn;
     Promise.all(pageDone).then(() => { if (!cover) return; if (!cover.classList.contains('gone')) cover.remove(); if (OP.cover !== cover) return; OP.cover = null; WRAP.classList.remove('pn-wiping'); });
     return { cur, done: Promise.all([...pageDone, ...helperDone]) };
   }
@@ -4740,8 +4743,7 @@
       return;
     }
     const cur = OP.cur = cursor(), dead = () => OP.over;
-    // One cursor starts the turn at the round number, then clicks column two to reveal columns one and two together.
-    if (roundTurn) { await roundTurn(cur); if (OP.over) return; }
+    // One cursor clicks column two to reveal columns one and two together, then turns the round number in column three.
     // The edge runs on below the last words while the cursor flies to Notes. `start` returns that run's end as
     // `{ done }` so its caller can move on without awaiting the trailing edge through the empty space.
     const start = async (at, edge, y0 = at.y, go) => {
@@ -4764,6 +4766,8 @@
     // then the notes column, with the same cursor: each message in view, top to bottom, then the rest land as it goes
     // (visit). With nothing there for it it goes, and what's further down is there as it does; with the column shut, the
     // rest wait for it
+    // Left to right: the columns first, then the round number, then the notes
+    if (roundTurn) { await roundTurn(cur); if (OP.over) return; }
     building = false;
     const todo = ui.notes ? jobsInView() : [];
     opNote(AGENT, 'notes');
@@ -5210,10 +5214,10 @@
     const first = g.firstElementChild, tb = el(`<span class="pnD-tb" aria-hidden="true">${dots()}</span>`);
     cur.typeAt = () => (tb.isConnected ? tb : first);
     try {
-      await fly(cur, () => { const b = first.getBoundingClientRect(); return { x: b.left + 7, y: b.top + 11 }; }, { over: 0, dead: gone }); alive();
+      await fly(cur, () => { const b = first.getBoundingClientRect(); return { x: b.left - 4 * UI, y: b.top + b.height / 2 }; }, { over: 0, dead: gone }); alive();   // just before its first words, on their line's middle
       await beat(rnd(60, 140)); alive();
-      press(cur);
-      tb.style.top = first.offsetTop + 'px'; g.classList.replace('wait', 'ty'); g.prepend(tb);
+      press(cur); tapRing(cur.x, cur.y);
+      tb.style.top = first.offsetTop + first.offsetHeight / 2 - 18.5 * UI + 'px'; g.classList.replace('wait', 'ty'); g.prepend(tb);   // its dots on that line, where the words come in
       tb.animate([{ opacity: 0, translate: '0 8px' }, { opacity: 1, translate: '0 0' }], { duration: 240 * SLOW, easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'backwards' });
       await beat(k ? rnd(420, 560) : rnd(650, 900)); alive();
       growSec(g, tb);
@@ -7709,9 +7713,9 @@
   // rolls up to this round's. Out of view, or
   // with Chrome not the user's window, it holds until the user is back; a scroll, click or key lands it at once. Once per version, kept in
   // human-feedback:new-round/<page> (the user: "i'd rather see a round indicator increment animation at the appropirate
-  // time"; "i don't understand what happens between done and the next round though"; options B and R2 B). It's the round turning, so nothing else moves before it: the
-  // opening plays it first and goes on when it ends (the user: "feedback received is a different stage than moving to the next
-  // round ... that's what kicks off the subsequent round's animations") ----------
+  // time"; "i don't understand what happens between done and the next round though"; options B and R2 B). The opening wipes the Outline and
+  // page in first, turns the round, then types the notes: left to right (the user, 2026-11-23: "have the agent cursor write down
+  // columns 1 and 2 first, and then change the round number second") ----------
   if (V && V.cur === V.last) {
     const NK = 'human-feedback:new-round/' + V.list[V.last].page, at = String(V.list[V.last].at || '');
     let seen = null; try { seen = localStorage.getItem(NK); } catch (e) { /* storage blocked */ }
