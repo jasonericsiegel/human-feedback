@@ -13,6 +13,7 @@
     python3 add_notes.py <page.html> --added '[Part label] "quote" What was added.'
     python3 add_notes.py <page.html> --done '[Part label] "quote" their note'
     python3 add_notes.py <page.html> --answered '[Part label] "quote" your question' "Their answer from chat."
+    python3 add_notes.py <page.html> --settled '[Part label] "quote" a carried thread' "One line on why it's settled."
     python3 add_notes.py <page.html> --received
     python3 add_notes.py <page.html> --converged --what-changed "We …" [--next-step "…"]
 
@@ -99,6 +100,15 @@ from an earlier version closes there, in that version's tag, and the new version
 something is answered in chat, then it shouldn't persist to the next round"). --answered replaces only this tag's list
 (data-answered, [{id, kind, from, block, quote, said, text, answer}], each id the question's own); otherwise it follows
 the rules for replies.
+
+Settled: each --settled closes one earlier thread this version carries (a question or a reply) because this version's own
+changes settled it or made it moot: its subject was removed or replaced, or the user decided it somewhere else (the user,
+2026-11-21: "This thread is now muted based on what you did in this round. Doesn't human feedback say that in this case, the
+thread should not persist to the next round?"). THREAD is the thread as the page shows it ([Part label], "quote", the
+question, or for a reply the user's note or your answer; --new-version prints what's carrying); WHY is one line for the
+agent's own record. The thread is left out of this round's carry, and so out of every later round's, and no row shows for
+it. It stays, still open, in the round it came from. A thread the user answered in chat takes --answered instead, which
+shows their words. --settled needs no stored list: a plain re-run keeps the carry it left.
 
 Again: each --again asks again, in shorter words, a question or reply left unanswered that still needs an answer. THREAD
 is the thread as the page asked it (as for --answered; --new-version and --next-round list what's carrying); SHORTER is
@@ -396,15 +406,33 @@ def unplaced_asks(text: str, asks: list[str], flag: str = "--ask") -> list[str]:
     return out
 
 
-def unplaced_carry(text: str, carry_json: str | None) -> list[str]:
-    """Carried questions from earlier rounds that sit on no part of this page (asked before every question needed
-    one, or on a part this version dropped)."""
+def placed_carry(text: str, carry_json: str | None) -> tuple[str | None, list[dict]]:
+    """The carried threads this page still has a place for, as JSON (None for none), and those whose part it dropped. A
+    reply to a note on no part (Overall) keeps its place. A part the page dropped was settled, so its threads leave with it (the user, 2026-11-21: "This thread was muted and/or
+    answered already in a different thread ... you don't persist the thread into the next round")."""
     labels = part_labels(text)
+    kept, dropped = [], []
+    for t in json.loads(carry_json or "[]"):
+        (dropped if t.get("block") and label_key(t["block"]) not in labels else kept).append(t)
+    return (json.dumps(kept, ensure_ascii=False) if kept else None), dropped
+
+
+def unplaced_carry(carry_json: str | None) -> list[str]:
+    """Carried questions asked before every question needed a part: they sit on none."""
     return [f'carried question from round {t.get("from")} "{(t.get("text") or "")[:60]}" is on no part of this '
             'page. Close it with --answered if the user answered it in chat. If it still needs an answer, put the '
             'question in the relevant part of the page.'
-            for t in json.loads(carry_json or "[]")
-            if t.get("kind") == "ask" and (not t.get("block") or label_key(t["block"]) not in labels)]
+            for t in json.loads(carry_json or "[]") if t.get("kind") == "ask" and not t.get("block")]
+
+
+def dropped_note(dropped: list[dict]) -> str:
+    """What the run says about the carried threads it left behind with their parts."""
+    rows = "; ".join(f'{"question" if t.get("kind") == "ask" else "reply"} from round {t.get("from")}, '
+                     f'[{t.get("block") or "no part"}] "{(t.get("text") or "")[:60]}"' for t in dropped)
+    n = len(dropped)
+    return (f"human-feedback: dropped {n} earlier thread{'s' * (n != 1)} on parts this page no longer has, so the user "
+            f"won't see {'them' if n != 1 else 'it'} again: {rows}. If one still needs the user, --ask it on the part it "
+            "fits now.")
 
 
 def broken_links(text: str, args) -> list[str]:
@@ -490,19 +518,22 @@ def parse_answered(question: str, answer: str, pool: list[dict]) -> dict:
 
 
 def find_thread(question: str, pool: list[dict], flag: str) -> dict:
-    """The thread a flag names, as the page asked it: its part, quote and words, or its words alone if one thread has them."""
+    """The thread a flag names, as the page shows it: its part, quote and words, or its words alone if one thread has them.
+    A reply's words are the agent's answer or the user's note it answers; either finds it."""
     parts = ASK.fullmatch(QCOPIED.sub("", question)).groups()
     block, quote, text = (re.sub(r"\s+", " ", x) if x is not None else None for x in parts)
     if not text:
         fail(f'{flag} needs your question as the page asked it ([Part label] "quote" question)')
-    exact = [t for t in pool if (t.get("block") or None) == block and same_quote(t.get("quote"), quote)
-             and words(t.get("text")) == text]
-    alike = {t["id"]: t for t in pool if words(t.get("text")) == text}
+    def says(t: dict) -> bool:
+        return text in (words(t.get("text")), words(t.get("said")) if t.get("kind") == "reply" else None)
+    exact = [t for t in pool if (t.get("block") or None) == block and same_quote(t.get("quote"), quote) and says(t)]
+    alike = {t["id"]: t for t in pool if says(t)}
     found = exact[0] if exact else next(iter(alike.values())) if len(alike) == 1 else None
     if found is None:
-        asked = "; ".join(f'"{t.get("text")}"' for t in pool) or "none"
-        fail(f"{flag}: no question on the page matches {question.strip()!r}. Pass it as the page asked it "
-             f'([Part label] "quote" question). Its questions now: {asked}')
+        asked = "; ".join(f'"{t.get("text")}"' + (f' (reply to "{t.get("said")}")' if t.get("kind") == "reply" and t.get("said") else "")
+                          for t in pool) or "none"
+        fail(f"{flag}: no question or reply on the page matches {question.strip()!r}. Pass it as the page shows it "
+             f'([Part label] "quote" question, or for a reply the user\'s note or your answer). Its threads now: {asked}')
     return found
 
 
@@ -703,11 +734,13 @@ def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int
     earlier = [x for x in given or [] if version_of(entries, x.get("from"), page)]
     answered = carried(page, attrs, args, given and [x for x in given if x not in earlier], "data-answered")
     closed = json.dumps(json.loads(answered or "[]") + earlier, ensure_ascii=False)
-    carrying_now = carry(base, asks, replies, closed, tuple(old["id"] for old, _ in again))
+    settled = [find_thread(q, base, "--settled") for q, why in args.settled or [] if why.strip() or
+               fail('--settled needs the thread as the page shows it ([Part label] "quote" its words) and one line on why it is settled')]
+    carrying_now = carry(base, asks, replies, closed, tuple(old["id"] for old, _ in again) + tuple(x["id"] for x in settled))
     replies, carrying_now = with_gists(replies, carrying_now, args.gist, threads(attrs, current) + base)
     return {"asks": asks, "updated": updated, "replies": replies, "done": done, "answered": answered,
             "carry": carrying_now,
-            "again": [new for old, new in again if old.get("kind") == "ask"], "earlier": earlier}
+            "again": [new for old, new in again if old.get("kind") == "ask"], "earlier": earlier, "settled": settled}
 
 
 def with_gists(replies: str | None, carrying_now: str | None, given: list | None,
@@ -1079,22 +1112,35 @@ def reopen(page: Path, attrs: dict) -> str:
 
 
 def unanswered_asks(page: Path, attrs: dict) -> list[str]:
-    """The agent's questions no paste has come back for: on any version, asked (its tag written) after the last
-    --received, less the ones closed with --answered. Done would cover the user's chance to answer them."""
+    """Questions still active in the latest version, authored after the last receipt.
+
+    Naming or rewriting a version changes data-made, not when its questions were asked. Earlier versions keep their
+    history, but a question settled or dropped from the latest version must not hold Done open there.
+    """
+    entries = load_set(page, attrs) or [{"path": page}]
+    tags = [(e["path"], read_tag(e["path"].read_text(encoding="utf-8")))
+            for e in entries if e["path"].is_file()]
+    if not tags:
+        return []
+    latest, tag = tags[-1]
+    closed = {x.get("id") for x in listed(tag, "data-answered")}
+    asks = listed(tag, "data-asks") + [a for a in listed(tag, "data-carry") if a.get("kind") == "ask"]
+    receipts = [dot_file(f, "received.js").stat().st_mtime for f in version_files(page, attrs)
+                if dot_file(f, "received.js").exists()]
+    received = max(receipts, default=float("-inf"))
     out = []
-    for f in version_files(page, attrs):
-        tag = read_tag(f.read_text(encoding="utf-8")) if f.is_file() else {}
-        closed = {x.get("id") for x in listed(tag, "data-answered")}
-        asks = [a for a in listed(tag, "data-asks") if a.get("id") not in closed]
-        if not asks:
+    for ask in asks:
+        if ask.get("id") in closed:
             continue
+        origin = ask.get("from")
+        source = entries[origin - 1]["path"] if isinstance(origin, int) and 0 < origin <= len(entries) else latest
+        old = next((t for f, t in tags if f == source), {})
         try:
-            made = datetime.fromisoformat(tag.get("data-made") or "").timestamp()
+            authored = datetime.fromisoformat(ask.get("authoredAt") or old.get("data-made") or "").timestamp()
         except ValueError:
-            continue
-        got = dot_file(f, "received.js")
-        if not got.exists() or got.stat().st_mtime < made:
-            out += [a.get("text") or "" for a in asks]
+            continue   # no known authoring time on a legacy question
+        if received < authored:
+            out.append(ask.get("text") or "")
     return out
 
 
@@ -1272,7 +1318,10 @@ def carrying(carry_json: str | None) -> str:
     if not rows:
         return ""
     return ("\nhuman-feedback: carrying these earlier threads until the user answers (their paste shows any they closed). "
-            "Put any new review questions in the page itself:\n" + "\n".join(
+            "Put any new review questions in the page itself. Before the follow-up run, check each one against this version's "
+            "changes and their whole paste: if your changes settled it or made it moot (its subject removed, replaced, or "
+            "decided by the user elsewhere), close it now with --settled '<thread as shown below>' \"<one line on why>\" so it "
+            "isn't carried on (one the user answered in chat takes --answered with their words):\n" + "\n".join(
                 f"  {'question' if kind == 'ask' else 'reply'}, round {origin}: "
                 + (f"[{block}] " if block else "") + (f'"{quote}" ' if quote else "") + (text or "")
                 for kind, origin, block, quote, text in rows))
@@ -1282,7 +1331,8 @@ def next_step(page: Path) -> str:
     """What to do after --new-version: apply the notes to the new file, then run this in one go."""
     script = Path(__file__).resolve()
     return (f"human-feedback: next: apply their notes to {page}. Answer direct questions in Notes with --reply. "
-            "Then run this with your replies and any --done or --answered entries:\n"
+            "Then run this with your replies and any --done, --answered or --settled entries "
+            "(review each carried thread listed above first):\n"
             f"  python3 {shlex.quote(str(script))} {shlex.quote(str(page))} --name \"…\"")
 
 
@@ -1295,7 +1345,7 @@ def start_version(page: Path, args) -> Path:
         ("--converged", args.converged), ("--reopen", args.reopen), ("--name", args.name), ("--ask", args.ask), ("--updated", args.updated),
         ("--added", args.added),
         ("--reply", args.reply), ("--done", args.done), ("--gist", args.gist), ("--answered", args.answered),
-        ("--again", args.again), ("--what-changed", args.what_changed), ("--helper", args.helper), ("--owns", args.owns),
+        ("--settled", args.settled), ("--again", args.again), ("--what-changed", args.what_changed), ("--helper", args.helper), ("--owns", args.owns),
         ("--next-step", args.next_step)) if given]
     if clash:
         fail(f"--new-version can't go with {', '.join(clash)}: it only makes the file. Name it and pass any "
@@ -1392,6 +1442,9 @@ def parse_args(argv) -> argparse.Namespace:
     ap.add_argument("--answered", nargs=2, action="append", metavar=("QUESTION", "ANSWER"),
                     help='close one of your questions the user answered in chat: '
                          '\'[Part] "quote" your question\' "their words"')
+    ap.add_argument("--settled", nargs=2, action="append", metavar=("THREAD", "WHY"),
+                    help='close an earlier question or reply this version carries because your changes settled it or made it '
+                         'moot: \'[Part] "quote" the thread as the page shows it\' "one line on why"; it is not carried on')
     ap.add_argument("--again", nargs=2, action="append", metavar=("THREAD", "SHORTER"),
                     help='ask again, shorter, a question or reply left unanswered that still needs an answer: '
                          '\'[Part] "quote" what the page asked\' "shorter words"; it replaces the old thread')
@@ -1458,7 +1511,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail(f"--agent is a name, {AGENT_MAX} characters at most: {agent[:AGENT_MAX + 10]}…")
     if args.reopen:
         if any((args.converged, args.received, args.next_round, args.new_version, args.copy, args.after, args.name, args.ask,
-                args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.again, args.helper, args.owns,
+                args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.settled, args.again, args.helper, args.owns,
                 args.appearance, args.what_changed, args.next_step)):
             fail("--reopen goes on its own")
         print(reopen(page, attrs))
@@ -1467,7 +1520,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail("--what-changed and --next-step go with --converged")
     if args.converged:
         if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
-                args.done, args.gist, args.answered, args.again, args.helper, args.owns, args.appearance)):
+                args.done, args.gist, args.answered, args.settled, args.again, args.helper, args.owns, args.appearance)):
             fail("--converged goes on its own, with --what-changed and --next-step")
         waiting_on = unanswered_asks(page, attrs)
         if waiting_on:
@@ -1484,7 +1537,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         return 0
     if args.received:
         if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply, args.done,
-                args.gist, args.answered, args.again, args.helper, args.owns, args.appearance)):
+                args.gist, args.answered, args.settled, args.again, args.helper, args.owns, args.appearance)):
             fail("--received goes on its own")
         if attrs and pictures == "on":
             make_folder(feedback_folder(page, workspace, attrs))
@@ -1515,7 +1568,10 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         agent = " ".join(agent_file(page).read_text(encoding="utf-8").split())[:AGENT_MAX] or None
     lists = agent_lists(page, attrs, args, entries, current)
     earlier = lists.pop("earlier")
-    for message in unplaced_carry(text, lists["carry"]):
+    lists["carry"], dropped = placed_carry(text, lists["carry"])
+    if dropped:
+        print(dropped_note(dropped))
+    for message in unplaced_carry(lists["carry"]):
         warn(message)
     for asked in lists.pop("again"):
         if label_key(asked.get("block") or "") not in part_labels(text):
@@ -1549,6 +1605,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         write_sidecar(agent_file(page), f"{agent}\n")
     framed = tag_frames(page, text, src, folder, downloads, pictures)
     line = report(page, text, round_no, entries, others, framed=len(framed))
+    if lists["settled"]:
+        line += f"; {len(lists['settled'])} carried thread{'s' * (len(lists['settled']) != 1)} settled, not carried on"
     if earlier:
         line += f"; {len(earlier)} answered in chat, closed in {'their' if len(earlier) != 1 else 'its'} own round"
     print((line + "\n" + next_step(page) if args.new_version else line)

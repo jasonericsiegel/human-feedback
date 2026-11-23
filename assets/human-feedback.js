@@ -709,7 +709,16 @@
         const kids = [...b.childNodes], k = kids.findIndex((n) => n.nodeType === 1 && (n.matches(EDIT_BLOCK) || n.querySelector(EDIT_BLOCK)));
         const head = kids.slice(0, k);
         if (k < 1 || !head.some((n) => n.textContent.trim()) || (head.length === 1 && head[0].classList?.contains(P + 'lead'))) return;
-        const w = document.createElement('span'); w.className = P + 'lead'; b.insertBefore(w, head[0]); head.forEach((n) => w.appendChild(n));
+        const wrap = (ns) => { const w = document.createElement('span'); w.className = P + 'lead'; b.insertBefore(w, ns[0]); ns.forEach((n) => w.appendChild(n)); };
+        // a grid or flex row (1.156.0): each child is a cell of its own, and one wrapper around them all made them one cell,
+        // squeezed into the first column (a review page's rows, a value, a title and its buttons, each title one word to a line).
+        // A child there is drawn as a block, so one with words is a block of words already (wordBlocks) and stays as it is, with
+        // its own sizing and place in the row; only a run of bare words between them is wrapped, one wrapper a run, a cell either way
+        if (!/^(inline-)?(grid|flex)$/.test(getComputedStyle(b).display)) { wrap(head); return; }
+        let run = [];
+        const end = () => { if (run.some((n) => n.data.trim())) wrap(run); run = []; };
+        head.forEach((n) => { if (n.nodeType === 3) run.push(n); else if (n.nodeType === 1) end(); });
+        end();
       });
       const SEL = EDIT_BLOCK + ',span.' + P + 'lead';
       const homes = [...document.querySelectorAll('[data-note]')].filter((p) => !p.closest('.pn-ui')).map((p) => {
@@ -2318,9 +2327,10 @@
   // !important because an email's inline <body style="padding:…"> otherwise wins and leaves the page under the outline.
   pageCss(`
     /* tabs: a closed panel stays closed whatever display the page gives it. A bare tablist, one with no class of its own, gets a plain
-       sticky bar; a page that styles its tabs gives the list a class, and :where keeps all this below any rule of the page's */
+       sticky bar, under the title bar while that shows (tabRoom), and under the bars around it when it sits in another bar's panel
+       (tabStack); a page that styles its tabs gives the list a class, and :where keeps all this below any rule of the page's */
     [role="tabpanel"][hidden]{display:none!important}
-    :where([role="tablist"]:not([class])){position:sticky;top:0;z-index:5;display:flex;gap:20px;overflow-x:auto;scrollbar-width:none;margin-bottom:20px;background:var(--${P}tabbg,Canvas);border-bottom:1px solid color-mix(in srgb,currentColor 18%,transparent)}
+    :where([role="tablist"]:not([class])){position:sticky;top:var(--${P}tabtop,var(--notes-layer-top,0px));z-index:5;display:flex;gap:20px;overflow-x:auto;scrollbar-width:none;margin-bottom:20px;background:var(--${P}tabbg,Canvas);border-bottom:1px solid color-mix(in srgb,currentColor 18%,transparent)}
     :where([role="tablist"]:not([class]) [role="tab"]:not([class])){flex:none;padding:12px 0 10px;border:0;border-bottom:2px solid transparent;background:none;font:inherit;font-weight:600;color:inherit;opacity:.6;white-space:nowrap;cursor:pointer}
     :where([role="tablist"]:not([class]) [role="tab"][aria-selected="true"]:not([class])){opacity:1;border-bottom-color:currentColor}
     body.${P}ready{transition:padding .28s ease}   /* only a click moves the page; the first layout lands in place */
@@ -2589,6 +2599,7 @@
     /* the summary: What we did, Final file, Next steps; section headings in Codex's style, each with its icon left of it */
     .pnN-done{position:fixed;right:0;top:102px;bottom:0;width:${R + 1}px;box-sizing:border-box;z-index:2147481900;overflow-y:auto;overscroll-behavior:contain;
       padding:24px 20px 28px;background:var(--pn-side);border-left:1px solid var(--pn-hair);display:none;scrollbar-width:thin;font:400 15px/1.55 var(--pn-ui);color:var(--pn-text)}
+    .pnN-done{overflow-wrap:anywhere}
     .pn-done .pnN-done{display:block} .pnR-rail .pnN-done{display:none}
     /* under Done the threads are read-only, listed under the summary, so the Open questions row would have no job: the
        bar goes back to one line and the summary starts under it; Unlock restores any open questions and their Reply boxes */
@@ -3075,7 +3086,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.153.8', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.157.0', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -3191,19 +3202,28 @@
   // ---------- updates: a quiet shelf for the person who installed the local layer ----------
   const UPDATE_URL = 'https://raw.githubusercontent.com/jasonericsiegel/human-feedback/main/VERSION';
   const updateUrl = document.currentScript.getAttribute('data-update-url') ?? UPDATE_URL;
+  // when the latest version went out: the last commit that changed VERSION
+  const SHIPPED_URL = 'https://api.github.com/repos/jasonericsiegel/human-feedback/commits?path=VERSION&per_page=1';
+  const shippedUrl = document.currentScript.getAttribute('data-update-shipped-url') ?? SHIPPED_URL;
   const UPDATE_KEY = 'human-feedback:update';
   const updateVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
-  function showUpdate(latest) {
-    if (!updateVersion(latest)) return;
+  const updateNewer = (latest) => {
     const a = latest.split('.').map(Number), b = ABOUT.version.split('.').map(Number), at = a.findIndex((n, i) => n !== b[i]);
-    if (at < 0 || a[at] < b[at]) return;
+    return at >= 0 && a[at] > b[at];
+  };
+  // A page keeps the layer it was made with, so an older layer on a page made before the latest version shipped says
+  // nothing about the installed skill. Only a page made after that is proof the skill is behind (the user, 2026-11-21: "we
+  // probably only want this upgrade notice if the page that we're viewing was created after the ship timestamp")
+  const pageMade = PN.MADE || Date.parse(document.lastModified) || 0;
+  function showUpdate(latest, shipped) {
+    if (!updateVersion(latest) || !updateNewer(latest) || !(shipped > 0) || !(pageMade > shipped)) return;
     const shelf = el(`<section class="pnU" aria-label="Update available"><h3>Update available</h3>
       <p class="pnU-ver">Installed ${ABOUT.version} · Latest ${latest}</p>
       <p class="pnU-ask">Ask your agent to update <span>human-feedback</span></p>
       <button type="button" class="pn-btn pri">${icon('Copy01Icon')}<span>Copy instruction for agent</span></button></section>`);
     const ask = shelf.querySelector('.pnU-ask'), button = shelf.querySelector('.pn-btn');
     button.addEventListener('click', async () => {
-      const ok = await PN.copyText('Update the human-feedback skill to the latest version from https://github.com/jasonericsiegel/human-feedback.');
+      const ok = await PN.copyText('Update the human-feedback skill to the latest version from https://github.com/jasonericsiegel/human-feedback');
       if (!ok) {
         const range = document.createRange(), selection = ROOT.getSelection?.() || getSelection();
         range.selectNodeContents(ask); selection.removeAllRanges(); selection.addRange(range);
@@ -3217,15 +3237,22 @@
     if (location.protocol !== 'file:') return;
     const now = new Date(), day = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
     let cached = null; try { cached = JSON.parse(localStorage.getItem(UPDATE_KEY)); } catch (e) { /* storage blocked */ }
-    if (cached?.day === day) { showUpdate(cached.latest); return; }
-    const keep = (latest) => { try { localStorage.setItem(UPDATE_KEY, JSON.stringify({ day, latest })); } catch (e) { /* storage blocked */ } };
+    // a day's result from before the ship check (latest with no shipped) is checked again
+    if (cached?.day === day && (cached.latest == null || 'shipped' in cached)) { showUpdate(cached.latest, cached.shipped); return; }
+    const keep = (latest, shipped = 0) => { try { localStorage.setItem(UPDATE_KEY, JSON.stringify({ day, latest, shipped })); } catch (e) { /* storage blocked */ } };
     keep(null);   // even a failed check counts for today, including a reload before its response
+    const ask = { credentials: 'omit', referrerPolicy: 'no-referrer' };
     try {
-      const response = await fetch(updateUrl, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+      const response = await fetch(updateUrl, ask);
       if (!response.ok) return;
       const latest = (await response.text()).trim();
       if (!updateVersion(latest)) return;
-      keep(latest); showUpdate(latest);
+      if (!updateNewer(latest)) { keep(latest); return; }   // nothing newer: no need to ask when it shipped
+      keep(latest);   // a failed ship check counts for today too, with no shelf
+      const sent = await fetch(shippedUrl, ask);
+      if (!sent.ok) return;
+      const shipped = Date.parse((await sent.json())?.[0]?.commit?.committer?.date || '') || 0;
+      keep(latest, shipped); showUpdate(latest, shipped);
     } catch (e) { /* offline or unreadable: no shelf */ }
   }
   checkUpdate();
@@ -3354,6 +3381,7 @@
     const r = n.getBoundingClientRect(); let cover = 0;
     const h = pageH1(), row = out.querySelector('.hd'), rowH = out.offsetWidth && row ? row.getBoundingClientRect().height : 0;
     if (h && rowH >= 2 && !WRAP.classList.contains('pn-tight') && !n.contains(h) && h.getBoundingClientRect().bottom <= r.top - pad) cover = rowH;
+    const hc = cover;   // a bare tab bar sits under the title bar exactly when the title bar shows, so it's judged where the jump leaves it
     for (const x of document.body.querySelectorAll('*')) {
       if (x.closest('.pn-ui') || x.contains(n) || n.contains(x)) continue;
       const cs = getComputedStyle(x);
@@ -3361,7 +3389,7 @@
       const b = x.getBoundingClientRect();
       if (!b.height || cs.visibility === 'hidden' || b.height > innerHeight / 2 || b.right <= r.left || b.left >= r.right) continue;
       if (cs.position === 'fixed') { if (b.top <= 1 && b.bottom > 0) cover = Math.max(cover, b.bottom); continue; }
-      const p = x.parentElement?.getBoundingClientRect(), t = parseFloat(cs.top);
+      const p = x.parentElement?.getBoundingClientRect(), t = barUp.has(x) ? hc + barUp.get(x) : parseFloat(cs.top);
       if (p && !Number.isNaN(t) && t < innerHeight / 2 && p.top <= r.top && p.bottom >= r.top + b.height) cover = Math.max(cover, t + b.height);
     }
     return cover;
@@ -4271,7 +4299,7 @@
   }
   thrPv.onclick = () => thrStep(-1); thrNx.onclick = () => thrStep(1);
   thrTl.onclick = () => thrGo(allThreads().find(threadWaiting));
-  thr.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });   // the Reply box the user is in keeps its focus
+  thr.addEventListener('mousedown', (e) => { if (e.target.closest('button,.pn-go')) e.preventDefault(); });   // the Reply box the user is in keeps its focus
   thr.addEventListener('keydown', (e) => {
     if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
     e.preventDefault(); e.stopPropagation(); thrStep(e.key === 'ArrowLeft' ? -1 : 1);
@@ -4349,6 +4377,7 @@
   const tabsIn = (set) => [...set.querySelectorAll('[role="tab"]')].filter(panelOf);
   const tabSets = () => [...new Set([...document.querySelectorAll('[role="tab"]')].filter((t) => !inLayer(t) && panelOf(t)).map(tabSet))];
   const tabKey = (t) => t.getAttribute('aria-controls') || t.id;
+  const bareBar = (x) => x.matches('[role="tablist"]:not([class])');   // a bar the layer draws, sticky under the title bar
   const TABS = 'human-feedback:tabs/' + PN.COUNT_PAGE;
   const tabsKept = () => { try { return JSON.parse(sessionStorage.getItem(TABS)) || {}; } catch (e) { return {}; } };
   function openTab(t) { tabsIn(tabSet(t)).forEach((x) => { x.setAttribute('aria-selected', String(x === t)); panelOf(x).hidden = x !== t; }); }
@@ -5819,12 +5848,14 @@
     const x = (h.closest('main,article,[role="main"]') || h.parentElement)?.querySelector('p') || h, cs = getComputedStyle(x), r = x.getBoundingClientRect();
     return { left: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft), width: x.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) };
   };
-  let headRaf = 0;
+  let headRaf = 0, room = -1, stackRaf = 0;
+  const roomCss = document.createElement('style'); document.head.appendChild(roomCss);
+  const barUp = new WeakMap(), watched = new WeakSet();
   function headDraw() {
     const h = pageH1(), row = out.querySelector('.hd'), rowH = out.offsetWidth && row ? row.getBoundingClientRect().height : 0;
     const on = !!h && rowH >= 2 && !WRAP.classList.contains('pn-tight') && h.getBoundingClientRect().bottom <= 0;
     head.classList.toggle('on', on); head.setAttribute('aria-hidden', String(!on)); headT.tabIndex = on ? 0 : -1;
-    if (!on) return;
+    if (!on) { tabRoom(); return; }
     const words = h.textContent.replace(/\s+/g, ' ').trim(); if (headT.textContent !== words) headT.textContent = words;
     const bs = getComputedStyle(document.body), bar = ROOT.querySelector('.pnN-bar');
     const left = Math.min(out.getBoundingClientRect().right, parseFloat(bs.paddingLeft) || 0);
@@ -5839,12 +5870,60 @@
       else if (hint) headT.title = hint; else headT.removeAttribute('title');
     }
     if (tipAt === headT && tipEl.classList.contains('on')) tipShow();
+    tabRoom();
   }
   const headSoon = () => { cancelAnimationFrame(headRaf); headRaf = requestAnimationFrame(headDraw); };
+  head.addEventListener('transitionend', tabRoom); head.addEventListener('transitioncancel', tabRoom);   // its fade out ends: the bar goes back up
   addEventListener('scroll', headSoon, { passive: true }); addEventListener('resize', headSoon);
   if (window.ResizeObserver) { const ro = new ResizeObserver(headSoon); ro.observe(out); ro.observe(document.body); }
   document.fonts?.ready.then(headSoon);
   headSoon();
+  // ---------- the room at the top (1.157.0): the title bar is fixed over the top of the page's column, so a sticky tab bar the
+  // layer draws would sit beneath it, and its tabs couldn't be clicked (the user, 2026-11-22: a review page's tabs were gone under
+  // it at 1440 once scrolled, and every related way a bar can end up hidden is to be checked: tests/tab-bar.test.mjs).
+  // --notes-layer-top, on the page's <html>, is how far down the window the layer covers: the title bar's bottom while any of it
+  // shows, its fade out included, else 0. A bare bar's top follows it; a bare bar inside another bare bar's panel sits under that
+  // one as well; and each panel of a bare bar carries --notes-layer-tabs, the bottom of the bars above it, so a sticky thing of
+  // the page's own in a panel can sit under them (top: var(--notes-layer-tabs, 0px)). A page that styles its own bar pins it
+  // with top: var(--notes-layer-top, 0px). Its own <style>, not pageCss, which scales every px, nor <html>'s style, which the
+  // theme watch reads ----------
+  function tabRoom() {
+    const hs = getComputedStyle(head), r = head.getBoundingClientRect();
+    const top = hs.visibility !== 'hidden' && r.height && r.width ? Math.max(0, Math.round(r.bottom * 100) / 100) : 0;
+    if (top !== room) { room = top; roomCss.textContent = `:root{--notes-layer-top:${top}px;--notes-layer-tabs:var(--notes-layer-top)}`; }
+  }
+  // the box a bar sticks inside, when that isn't the window: a page's own scroller, or any box that clips. The title bar is
+  // over the window, so a bar in such a box sticks to the top of its box as before
+  function barBox(x) {
+    const clips = (n) => { const c = getComputedStyle(n); return /auto|scroll|hidden/.test(c.overflowX + ' ' + c.overflowY); };
+    for (let p = x.parentElement; p && p !== document.documentElement; p = p.parentElement) {
+      if (p === document.body ? clips(p) && clips(document.documentElement) : clips(p)) return p;   // <body>'s own overflow is the window's, unless <html> has one too
+    }
+    return null;
+  }
+  function tabStack() {
+    for (const set of tabSets()) {
+      if (!bareBar(set)) continue;
+      const box = barBox(set), from = box ? '0px' : 'var(--notes-layer-top, 0px)'; let up = 0;
+      for (let p = set.parentElement?.closest('[role="tabpanel"]'); p; p = p.parentElement?.closest('[role="tabpanel"]')) {
+        const t = tabOf(p), s = t && tabSet(t); if (s && s !== set && bareBar(s) && barBox(s) === box) up += s.offsetHeight;
+      }
+      if (box) barUp.delete(set); else barUp.set(set, up);
+      tabVar(set, `--${P}tabtop`, up || box ? `calc(${from} + ${up}px)` : '');
+      const below = `calc(${from} + ${up + set.offsetHeight}px)`;
+      for (const t of tabsIn(set)) tabVar(panelOf(t), '--notes-layer-tabs', below);
+      if (stackRo && !watched.has(set)) { watched.add(set); stackRo.observe(set); }   // once each
+    }
+  }
+  function tabVar(n, k, v) {   // only a change writes
+    if (n.style.getPropertyValue(k) === v) return;
+    if (v) n.style.setProperty(k, v); else n.style.removeProperty(k);
+  }
+  const stackSoon = () => { cancelAnimationFrame(stackRaf); stackRaf = requestAnimationFrame(tabStack); };
+  const stackRo = window.ResizeObserver ? new ResizeObserver(stackSoon) : null;   // a bar that wraps, or first shows in a panel just opened
+  addEventListener('resize', stackSoon);
+  new MutationObserver(stackSoon).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
+  tabRoom(); stackSoon();
   document.addEventListener('visibilitychange', tipOff);
   // one toast offers Undo for whatever was just taken away
   let undo = null, toastT = 0, toastAt = 0;
@@ -5945,7 +6024,7 @@
     const w = (list || []).filter((f) => f.wait); if (!w.length) return null;
     const box = el(`<div class="pnF-ask" role="status" data-for="${esc(target)}">${icon('Alert02Icon')}<p class="say"></p><div class="what"></div><div class="acts"><button type="button" class="pn-btn pri"></button><button type="button" class="pn-lnk">Cancel</button></div></div>`);
     box.querySelector('.what').append(...w.map((f) => el(`<span class="it" title="${esc(f.name)}">${f.thumb ? `<img src="${esc(f.thumb)}" alt="">` : ''}<span>${esc(f.name)}</span></span>`)));
-    box.addEventListener('mousedown', (e) => { if (e.target.closest('button')) e.preventDefault(); });   // the box the user is typing in keeps its focus
+    box.addEventListener('mousedown', (e) => { if (e.target.closest('button,.pn-go')) e.preventDefault(); });   // the box the user is typing in keeps its focus
     box.addEventListener('click', (e) => e.stopPropagation());
     const pri = box.pnAct = box.querySelector('.pn-btn');
     pri.onclick = (e) => { e.stopPropagation(); saveFiles(pri.dataset.pick === '1'); };
@@ -6265,10 +6344,11 @@
   }
 
   function render() { applyMarks(); renderRows(); keptPill?.sync(); }
-  // an agent's words with [[Part label]] as a link to that part. The label is the Outline's, or the whole heading of a part whose
+  // an agent's words with [[Part label]] as a link to that part, an <a> so a long label wraps with the sentence (a button
+  // can't break across lines, so it stood on lines of its own; 1.153.9). The label is the Outline's, or the whole heading of a part whose
   // label the Outline clips. One no longer on the page stays plain words
   function partNamed(label) { return blockEl(label) || [...document.querySelectorAll('[data-note]')].find((b) => { const l = labelOf(b); return l.endsWith('…') && label.startsWith(l.slice(0, -1)); }) || null; }
-  function linked(text) { return String(text).split(/\[\[(.+?)\]\]/).map((s, i) => (i % 2 && partNamed(s) ? `<button type="button" class="pn-go" data-to="${esc(s)}">${esc(s)}</button>` : esc(s))).join(''); }
+  function linked(text) { return String(text).split(/\[\[(.+?)\]\]/).map((s, i) => (i % 2 && partNamed(s) ? `<a href="#" class="pn-go" data-to="${esc(s)}">${esc(s)}</a>` : esc(s))).join(''); }
   // The user's words as bubbles: a blank line starts the next, as the agent's replies split (the user, 2026-11-10: "apply the same
   // human-feedback bubble split logic to my own bubbles, so that subsequent rounds split my messages for me"). Only what is shown
   // splits: the stored words and Copy keep his paragraphs as he wrote them, and while he types he has the one box, so a note
@@ -6308,6 +6388,8 @@
         const close = c === '“' ? '”' : c === '‘' ? '’' : c === '"' ? '"' : c.charCodeAt(0) === 39 ? c : '';
         const apostrophe = /[\p{L}\p{N}]/u.test(paragraph[i - 1] || '');
         if (close && !escaped && !apostrophe && paragraph.indexOf(close,i + 1) >= 0) quote = close;
+        // punctuation inside a word or link ends no sentence: raycast.com/?via=x, v1.2, e.g.x (a `?` there split a reply mid-link)
+        else if (/[.!?？。！]/u.test(c) && /[\p{L}\p{N}_\/=&#%~+@-]/u.test(paragraph[i + 1] || '')) masked[i] = 'x';
       }
       const plain = masked.join('');
       const ranges = segmenter ? [...segmenter.segment(plain)].map((s) => [s.index,s.segment.length]) : [...plain.matchAll(/.+?(?:[.!?]\s+|$)/gu)].map((m) => [m.index,m[0].length]);
@@ -6333,7 +6415,7 @@
   // Section links use the same document navigation as the Outline.
   ROOT.addEventListener('click', (e) => {
     const go = tgt(e).closest?.('.pn-go'); if (!go) return;
-    e.stopPropagation();
+    e.stopPropagation(); e.preventDefault();
     const n = partNamed(go.dataset.to); if (!n) return;
     PN.jump(n, labelOf(n));
   }, true);

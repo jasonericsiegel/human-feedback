@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.157.0 (2026-11-23)
+
+- Settled threads stop coming back. If you answered a question somewhere else, or a change made it moot, your agent closes it instead of carrying it into the next round.
+- When a new version drops a part of the page, earlier threads on that part go with it.
+- "Update available" shows only on a page made after the newer version came out. Older pages no longer say you're behind when you've already updated.
+- The tab bar stays in view below the page's title bar as you scroll. Tabs inside a tab stick under the outer ones.
+- Outline jumps land below the tab bar.
+- Fixed: turning on notes could squeeze a list row into its first column.
+- Fixed: a link in your agent's message could split it into two bubbles.
+- Fixed: a link to a section now wraps with its sentence.
+- Fixed: a long file path in the Done summary pushed the notes sideways.
+- Fixed: a question that was already settled could stop your agent from marking a review Done.
+
 ## 1.153.8 (2026-11-20)
 
 - The first opening shows a quiet page skeleton while it waits. The same agent cursor clicks, then wipes the page and Outline downward into place.
