@@ -1484,6 +1484,15 @@ def open_page(page: Path) -> None:
             print(f"human-feedback: opened {page}" + (f"; {details}" if details else ""))
 
 
+def require_review_proof(page: Path) -> None:
+    """Reject incomplete proof before any page or sidecar write."""
+    sys.dont_write_bytecode = True
+    import review_proof  # pylint: disable=import-outside-toplevel
+    errors = review_proof.check_file(page)
+    if errors:
+        fail("Review refused: " + "; ".join(errors))
+
+
 def main(argv=None, *, analytics_url: str | None = None) -> int:
     """Add or replace the tag, sync the version set, and report; an internal override can disable analytics."""
     args = parse_args(argv)
@@ -1499,6 +1508,9 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail(f"no such page: {page}")
     elif args.after and not args.name:
         fail("--after needs --name")
+    # Copying an unshown draft and acknowledging old notes do not admit a review.
+    if not (args.new_version or args.received or args.reopen):
+        require_review_proof(page)
     text = page.read_text(encoding="utf-8")
     attrs = read_tag(text)
     pictures = args.pictures or last_pictures(page, attrs)
@@ -1611,6 +1623,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         line += f"; {len(earlier)} answered in chat, closed in {'their' if len(earlier) != 1 else 'its'} own round"
     print((line + "\n" + next_step(page) if args.new_version else line)
           + (carrying(lists["carry"]) if args.new_version or args.next_round else ""))
+    if args.new_version:
+        print("Draft only: add or refresh the opening proof before the follow-up run, showing, or queueing.")
     if not args.new_version:
         if args.hold:
             print(f"Held without opening: {page}. Open it later: "

@@ -2669,7 +2669,7 @@
     /* a link in an agent's words to a part of the page (add_notes.py [[Part label]]): italic, so it reads as a section's name, with the
        outline's soft blue underline (the user: "it's clear it's a section. like put it in italics.
        stop adding new weird stylings like the black underline, we need to be consistent throughout human-feedback") */
-    .pn-go{--pn-ln:#a9c1e6;all:unset;font-style:italic;cursor:pointer;text-decoration:underline 1px var(--pn-ln);text-underline-offset:3px}
+    .pn-go{--pn-ln:#a9c1e6;all:unset;user-select:text;-webkit-user-select:text;font-style:italic;cursor:pointer;text-decoration:underline 1px var(--pn-ln);text-underline-offset:3px}
     .pn-go:focus-visible{outline:2px solid var(--pn-me);outline-offset:2px}
     @media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .pn-go{--pn-ln:#4a6a9c}}
     .pnN-ov .lbl{font:600 15px/1.4 var(--pn-ui);color:var(--pn-ink);margin-bottom:9px}   /* a section heading, like What we did */
@@ -3086,7 +3086,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.158.1', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.159.3', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -3206,6 +3206,8 @@
   const SHIPPED_URL = 'https://api.github.com/repos/jasonericsiegel/human-feedback/commits?path=VERSION&per_page=1';
   const shippedUrl = document.currentScript.getAttribute('data-update-shipped-url') ?? SHIPPED_URL;
   const UPDATE_KEY = 'human-feedback:update';
+  // the review server marks the pages it serves, so a published page or another server on this Mac never checks
+  const atLocalReview = document.currentScript.dataset.localReview === '1' && location.protocol === 'http:' && location.hostname === '127.0.0.1';
   const updateVersion = (v) => typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v);
   const updateNewer = (latest) => {
     const a = latest.split('.').map(Number), b = ABOUT.version.split('.').map(Number), at = a.findIndex((n, i) => n !== b[i]);
@@ -3234,7 +3236,7 @@
     out.insertBefore(shelf, appearance);
   }
   async function checkUpdate() {
-    if (location.protocol !== 'file:') return;
+    if (location.protocol !== 'file:' && !atLocalReview) return;
     const now = new Date(), day = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
     let cached = null; try { cached = JSON.parse(localStorage.getItem(UPDATE_KEY)); } catch (e) { /* storage blocked */ }
     // a day's result from before the ship check (latest with no shipped) is checked again
@@ -5345,7 +5347,7 @@
     if (threadWaiting({id})) return;
     clearTimeout(nextT);
     const advance = () => {
-      if (sel !== picked || rewriting || threadWaiting({id})) return;
+      if (sel !== picked || rewriting || threadWaiting({id}) || bubbleClick || notesSelection()) return;
       const all = allThreads(), i = all.findIndex((t) => t.id === id);
       if (!nudge.on && all[i]?.gone) return;   // the user switched tabs while the answered dot was fading
       const open = all.filter((t) => threadWaiting(t) && (nudge.on || !t.gone || (t.panel && away(t.panel) && tabOf(t.panel))));
@@ -6326,6 +6328,28 @@
   }
   addEventListener('scroll', () => { if (rxFor) closeRx(); }, { passive: true });
   const counts = () => { thrSync(); nudgeSync(); sentUi(); };
+  // A drag ends in a click too. Picking a row or editing a bubble rebuilds its DOM and destroys
+  // Chrome's selection, so leave selected notes-column text alone. Controls still take clicks.
+  const notesSelection = () => (ROOT.getSelection?.() || getSelection())?.toString();
+  col.addEventListener('click', (e) => {
+    if (!e.target.closest('button,textarea,input,select,a[href]') && notesSelection()) e.stopPropagation();
+  }, true);
+  // Wait briefly before a single click edits a saved bubble, so a second/third click can select
+  // its words instead. A new press cancels the pending edit before the browser extends its selection.
+  let bubbleClick = 0;
+  const cancelBubbleClick = () => { clearTimeout(bubbleClick); bubbleClick = 0; };
+  addEventListener('mousedown', cancelBubbleClick, true);
+  col.addEventListener('mousedown', (e) => { if (e.target.closest('.qb,.b,.q')) clearTimeout(nextT); }, true);
+  function bubbleAction(e, go) {
+    cancelBubbleClick();
+    if (e.detail > 1 || notesSelection()) return;
+    if (!e.detail || !e.target.closest('.qb,.b,.q,.was,.et')) return go();
+    const bubble = e.currentTarget, rowId = e.target.closest('.pnN-row')?.dataset.id;
+    bubbleClick = setTimeout(() => {
+      bubbleClick = 0;
+      if (!notesSelection() && (bubble.isConnected || (rowId && col.querySelector(`.pnN-row[data-id="${CSS.escape(rowId)}"]`)))) go();
+    }, 250);
+  }
   function select(id, atTop = false) {
     tieId = null;
     if (sel !== id) animateLine = true; sel = id; threadTop = atTop ? id : null; toward = null; renderRows();
@@ -6381,7 +6405,9 @@
   function agentParts(text, questionThread = false) {
     const parts = [];
     const segmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter('en', { granularity:'sentence' }) : null;
-    for (const paragraph of String(text || '').trim().split(/\r?\n\s*\r?\n/).filter(Boolean)) {
+    // CLI quoting can leave a blank line encoded as literal \\n\\n. Decode paragraph separators only, leaving code and paths intact.
+    const shown = String(text || '').replace(/(`+)[\s\S]*?\1|(?:\\r\\n|\\n)(?:[ \t]*(?:\\r\\n|\\n))+/g, (s, code) => code ? s : '\n\n');
+    for (const paragraph of shown.trim().split(/\r?\n\s*\r?\n/).filter(Boolean)) {
       // Ignore punctuation inside code/quotes when choosing boundaries; render the original slices.
       const masked = paragraph.split(''); let code = false, quote = '';
       for (let i = 0; i < paragraph.length; i++) {
@@ -6420,8 +6446,10 @@
   ROOT.addEventListener('click', (e) => {
     const go = tgt(e).closest?.('.pn-go'); if (!go) return;
     e.stopPropagation(); e.preventDefault();
-    const n = partNamed(go.dataset.to); if (!n) return;
-    PN.jump(n, labelOf(n));
+    bubbleAction(e, () => {
+      if (!go.isConnected) return;
+      const n = partNamed(go.dataset.to); if (n) PN.jump(n, labelOf(n));
+    });
   }, true);
   function marker(id, title, k) {   // a reaction shows as its sticker, else the comment icon
     const mk = el(`<button type="button" class="pnN-mk${REACT[k] ? ' stk' : ''}" data-id="${esc(id)}" title="${esc(title.slice(0, 80))}">${REACT[k] ? PN.art(k) : icon('ChatIcon')}</button>`);
@@ -6513,7 +6541,7 @@
         // need the edit icon on top right"); a sticker with no words gets a Comment box on its selected row instead
         // Delete is in the edit box, not the header (the user: "trash icon in col3 is really confusing")
         const bs = bubbles(n);   // a picture goes on from the Comment or edit box's own paperclip
-        if (bs.length) bs.forEach((b) => { b.title = 'Click to edit'; b.onclick = (e) => { e.stopPropagation(); editing = sel = n.id; doom = null; render(); }; row.appendChild(b); });
+        if (bs.length) bs.forEach((b) => { b.title = 'Click to edit'; b.onclick = (e) => { e.stopPropagation(); bubbleAction(e, () => { editing = sel = n.id; doom = null; render(); }); }; row.appendChild(b); });
         else if (n.id === sel) {
           const add = el('<textarea class="pn-ta" rows="1" placeholder="Comment"></textarea>');
           add.addEventListener('focus', () => { editing = n.id; render(); });
@@ -6525,7 +6553,7 @@
       // apepar above thebubble"); the prompt for a waiting one sits where its chip will land, after any chips already there
       if (fl.length) { const at = row.querySelector(':scope > .b, :scope > .pnF-box'); if (at) at.before(...fl); else row.append(...fl); }
       if (!row.querySelector(':scope > .b, :scope > .pnF-box')) row.classList.add('bare');
-      row.addEventListener('click', (e) => { if (e.target.closest('textarea,button')) return; select(n.id); });
+      row.addEventListener('click', (e) => { if (e.target.closest('textarea,button')) return; bubbleAction(e, () => select(n.id)); });
       threadDates(row, null, n);
       col.append(row, marker(n.id, n.text || REACT[n.react]?.[1] || '', n.react));
     });
@@ -6619,7 +6647,7 @@
     tick([...row.querySelectorAll(':scope > .b.nw')].pop(), id + ':source', true);
     if (x && REACT[x.react]) lastQb(row).appendChild(sticker(x));
     row.querySelector('.ew-re')?.addEventListener('click', (e) => e.stopPropagation());   // the cursor's to fill: a click there does nothing
-    row.addEventListener('click', (e) => { if (e.target.closest('textarea,button')) return; select(id); });
+    row.addEventListener('click', (e) => { if (e.target.closest('textarea,button')) return; bubbleAction(e, () => select(id)); });
     threadDates(row, a);
     return row;
   }
@@ -6713,14 +6741,14 @@
     rs.forEach((t, i) => {
       if (editable && rewriting && rewriting.id === a.id && rewriting.i === i) return row.append(...rewriteBox(a, i, t));
       const bs = [...el(`<div>${userBubbles(t, ' re')}</div>`).children];   // a paragraph a bubble; a click on one rewrites the whole reply
-      if (editable) bs.forEach((b) => { b.title = 'Click to edit'; b.onclick = (e) => { if (!threadOpen(a)) return; e.stopPropagation(); clearTimeout(nextT); rewriting = { id: a.id, i }; replying = null; doom = null; sel = id; renderRows(); }; });
+      if (editable) bs.forEach((b) => { b.title = 'Click to edit'; b.onclick = (e) => { e.stopPropagation(); bubbleAction(e, () => { if (!threadOpen(a)) return; clearTimeout(nextT); rewriting = { id: a.id, i }; replying = null; doom = null; sel = id; renderRows(); }); }; });
       row.append(...bs);
     });
     // a thread the user sent: the user's last reply has the receipt; on an earlier version the agent has them all
     if (!open) tick([...row.querySelectorAll(':scope > .b.re')].pop(), id, !PN.ASKS_OPEN || PN.gotIt(x?.at));
     // the Reply box, while the thread is open and the user hasn't replied: one reply per thread, rewritten by a click on it
     if (editable && !live && !rs.length) row.append(...replyBox(a, row));
-    row.addEventListener('click', (e) => { if (e.target.closest('textarea,button') || (editable && e.target.closest('.b.re'))) return; select(id); });
+    row.addEventListener('click', (e) => { if (e.target.closest('textarea,button') || (editable && e.target.closest('.b.re'))) return; bubbleAction(e, () => select(id)); });
     threadDates(row, a);
     return row;
   }
@@ -6773,7 +6801,7 @@
       let picked = sel;
       const wasOpen = openQuestion(a), n = state.answers[a.id], t = (n?.draft || '').trim();
       if (t) { delete n.draft; PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); liftFrom(ta, id, t); save(); if (wasOpen && holdFinishedThread(id)) picked = null; }
-      afterPress(() => { if (ta.isConnected) renderRows(); if (t && wasOpen) nudgeNext(a, picked); });
+      afterPress(() => { if (bubbleClick || notesSelection()) return; if (ta.isConnected) renderRows(); if (t && wasOpen) nudgeNext(a, picked); });
     });
     ta.addEventListener('keydown', (e) => {
       if (e.key === 'Tab') tabbed = true;

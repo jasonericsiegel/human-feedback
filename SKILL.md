@@ -3,7 +3,7 @@ name: human-feedback
 description: 'Turns a plan, report, spec or mockup you made into a local page where the user leaves doc comments and emoji reactions beside the words, then pastes them back so you answer each one in the next version. On "Let me review the plan", open it so the user can review it and leave notes. Use whenever you ask the user to review, approve or pick from a report, plan, options, or a list, setting or rule you propose (mid-task too, even as one yes/no), they ask to see or review work ("show me what it looks like now", "let me review the plan", "let me review it", "open it for feedback", "show me the options so I can pick one"), you have three or more questions or decisions open for them, or you finish a document or visual deliverable for them. Count the open questions together even across messages; a choice among options counts as one, but a numbered list of proposed changes counts each item, even when asked as one yes/no ("make changes 1–6?", "reply with numbers, all, or none", a 📚 lesson list). Not for a yes/no with nothing to look over, brief chat answers or reference files; show unfinished work only on an explicit preview request.'
 allowed-tools: Bash Read Edit Write
 metadata:
-  version: 1.158.1
+  version: 1.159.3
 ---
 
 # Human Feedback
@@ -28,6 +28,14 @@ This version sends no usage counts.
 - The work isn't a page yet → build plain HTML from it and keep the original file as the source.
 - Brief chat answers, unfinished drafts, and existing reference files stay in their usual flow. An explicit interim preview is allowed; a guide of steps the user must carry out keeps its guide-opening flow.
 - **Answer the user’s questions in Notes.** Use `--reply` on the note that asks the question, even when it also asks for a change. Put changes and longer explanations in the relevant part of the page. For your review questions and approval requests, follow step 6.
+
+## Before a page is prepared
+
+Put the opening proof in the first `data-note` part and refresh it for every round. Copy `references/template-review-proof.html` into the page, replace its placeholders, and keep its ids and evidence links. Read the current ask and agreements, compare them with the work, and cite what you actually checked. An earlier agent's account isn't the user's agreement. Label assumptions; if there was no separate agreement, say so.
+
+The block has the user's ask, the agreed points, and evidence linked to the ask and each point. Evidence can be shared across points; cite it on each one it supports. Say when a check wasn't run or a result is unverified. Don't call a plan an implementation or a script's structure check proof that the ask was understood.
+
+`add_notes.py` refuses incomplete proof before preparing a review, including with `--hold` and a new version's follow-up run. Copying an unshown draft with `--new-version` and marking old notes Received or reopened remain possible, so older pages can gain proof without editing the user's earlier round. Those operations never open the draft. `show.py` checks again before opening a local page with a notes tag, the layer script, or `data-note` parts, including one already Done. `--plain` does not bypass that check. Repair the named gap and rerun. Existing reference files and unrelated websites keep their usual opening flow.
 
 ## First use
 

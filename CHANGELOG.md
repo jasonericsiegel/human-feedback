@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.159.3 (2026-11-24)
+
+- "Update available" also shows on reviews opened at a local web address (`127.0.0.1`). It used to show only on pages opened as files.
+- Each review page opens with your ask, what you agreed to, and what your agent checked. A page missing any of that won't open for review until your agent adds it.
+- Words you select in a note stay selected, so you can copy them.
+- Fixed: a message from your agent could show `\n\n` instead of starting a new bubble.
+
 ## 1.158.1 (2026-11-23)
 
 - A new round opens left to right. Your agent's cursor brings in the Outline and the page, then turns the round number, then types its messages.

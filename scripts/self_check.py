@@ -22,8 +22,12 @@ import add_notes  # noqa: E402  pylint: disable=wrong-import-position
 import show  # noqa: E402  pylint: disable=wrong-import-position
 
 PAGE = """<!doctype html><html><head><title>human-feedback self-check</title></head><body>
-<section data-note><h1>human-feedback self-check</h1>
-<p>human-feedback is working here. You can close this tab.</p></section>
+<section id="review-proof" data-note><h1>human-feedback self-check</h1>
+<p>human-feedback is working here. You can close this tab.</p>
+<p id="review-ask">What this checks: human-feedback can save a page here and open it in your browser.</p>
+<ul id="review-agreed"><li id="agreement-scope">There was nothing to agree on. The skill runs this once, before its first page.</li></ul>
+<ul id="review-evidence"><li><a href="#review-ask">The check</a>: <cite>this page was saved and opened in your browser.</cite></li>
+<li><a href="#agreement-scope">When it runs</a>: <cite>the skill's own First use instructions.</cite></li></ul></section>
 </body></html>
 """
 

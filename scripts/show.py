@@ -601,6 +601,13 @@ def show(page: str, browser: str, reopen: bool = False, plain: bool = False,  # 
         # A published copy is remembered as its local page. A preview also uses the
         # local version list to find earlier rounds on the same server.
         path = site_map.local_page(page) if web_page else Path(want)
+        # Review marks also identify drafts; --plain cannot bypass their proof.
+        if path is not None and path.is_file() and path.suffix.lower() in PAGE_SUFFIXES:
+            import review_proof  # pylint: disable=import-outside-toplevel
+            errors = review_proof.check_file(path, marked_only=True)
+            if errors:
+                print("human-feedback: Review refused: " + "; ".join(errors), file=sys.stderr)
+                return 1
         untagged = not plain and not web_page and bare(path)
         automatic = None
         if not (scheme or plain or untagged or preview_url) and path.suffix.lower() in PAGE_SUFFIXES:
