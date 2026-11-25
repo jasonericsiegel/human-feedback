@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.163.0 (2026-11-25)
+
+- Your agent can suggest reactions that fit each message, including the question mark. Suggested icons stay bright and the others dim. All six reactions remain available.
+- When you reopen the picker, your selected reaction shows its sticker colors at the same size as a hovered icon.
+- Agent questions are bold again. Explanations and replies stay in regular type.
+
 ## 1.162.0 (2026-11-24)
 
 - Threads that need the same answer can share one conversation and one Reply box. The original messages and dates stay visible.

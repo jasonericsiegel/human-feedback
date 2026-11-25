@@ -514,7 +514,7 @@ def parse_answered(question: str, answer: str, pool: list[dict]) -> dict:
     if not answer:
         fail('--answered needs your question as the page asked it ([Part label] "quote" question) and their answer')
     found = find_thread(question, pool, "--answered")
-    keep = ("id", "kind", "from", "block", "quote", "said", "text", "gist", "authoredAt", "history")
+    keep = ("id", "kind", "from", "block", "quote", "said", "text", "gist", "authoredAt", "history", "suggestedReactions")
     return {**{k: found[k] for k in keep if found.get(k)}, "answer": answer}
 
 
@@ -547,9 +547,14 @@ def parse_again(old: str, shorter: str, pool: list[dict]) -> tuple[dict, dict]:
         fail("--again needs the thread as the page asked it and its shorter words")
     block, quote, said = (found.get(k) for k in ("block", "quote", "said"))
     if found.get("kind") == "ask":
-        return found, thread("q", (block, quote, shorter), (("block", block), ("quote", quote), ("text", shorter), ("history", found.get("history"))))
-    return found, thread("r", (block, quote, said, shorter),
-                         (("block", block), ("quote", quote), ("said", said), ("text", shorter), ("gist", found.get("gist"))))
+        new = thread("q", (block, quote, shorter), (("block", block), ("quote", quote), ("text", shorter),
+                                                    ("history", found.get("history"))))
+    else:
+        new = thread("r", (block, quote, said, shorter), (("block", block), ("quote", quote), ("said", said),
+                                                         ("text", shorter), ("gist", found.get("gist"))))
+    if found.get("suggestedReactions"):
+        new["suggestedReactions"] = found["suggestedReactions"]
+    return found, new
 
 
 def with_again(given: str | None, again: list[dict]) -> str | None:
@@ -581,7 +586,7 @@ def listed(attrs: dict, attr: str) -> list[dict]:
 def threads(attrs: dict, origin: int) -> list[dict]:
     """The agent's threads a round hands on: those it carried itself, then its questions and replies (never its done
     marks, which ask nothing, nor one the user answered in chat), each with its kind and the round it was first asked in."""
-    keep = ("id", "block", "quote", "said", "text", "gist", "authoredAt", "history")
+    keep = ("id", "block", "quote", "said", "text", "gist", "authoredAt", "history", "suggestedReactions")
     closed = {x.get("id") for x in listed(attrs, "data-answered")}
     entry = next((v for i, v in enumerate(listed(attrs, "data-versions")) if i + 1 == origin), {})
     own = [{**{k: x[k] for k in keep if x.get(k)},
@@ -784,9 +789,50 @@ def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int
                fail('--settled needs the thread as the page shows it ([Part label] "quote" its words) and one line on why it is settled')]
     carrying_now = carry(base, asks, replies, closed, tuple(old["id"] for old, _ in again) + tuple(x["id"] for x in settled))
     replies, carrying_now = with_gists(replies, carrying_now, args.gist, threads(attrs, current) + base)
-    return {"asks": asks, "updated": updated, "replies": replies, "done": done, "answered": answered,
-            "carry": carrying_now,
+    messages = {"asks": asks, "updated": updated, "replies": replies, "carry": carrying_now}
+    own_attrs = attrs if not args.next_round and attrs.get("data-page") == page_id(page) else {}
+    messages = with_suggested_reactions(messages, args.suggest_reactions, own_attrs)
+    return {**messages, "done": done, "answered": answered,
             "again": [new for old, new in again if old.get("kind") == "ask"], "earlier": earlier, "settled": settled}
+
+
+REACTION_NAMES = ("check", "up", "down", "heart", "party", "ask")
+
+
+def with_suggested_reactions(messages: dict, given: list | None, attrs: dict) -> dict:
+    """Keep each message's picker hints on the message, outside its text and id."""
+    lists = {name: json.loads(value or "[]") for name, value in messages.items()}
+    previous = {item["id"]: item["suggestedReactions"] for name in lists for item in listed(attrs, "data-" + name)
+                if item.get("id") and item.get("suggestedReactions")}
+    pool = [item for items in lists.values() for item in items]
+    for item in pool:
+        if item.get("id") in previous:
+            item.setdefault("suggestedReactions", previous[item["id"]])
+    for message, names in given or []:
+        block, quote, text = ASK.fullmatch(COPIED.sub("", message)).groups()
+        text = words(text)
+        part = label_key(no_page(block) or "")
+        matches = [item for item in pool if text and text in (words(item.get("text")), words(item.get("said")))
+                   and (not block or label_key(item.get("block") or "") == part)
+                   and (not quote or same_quote(item.get("quote"), quote))]
+        if block and not quote:
+            matches = [item for item in matches if not item.get("quote")] or matches
+        if not matches:
+            fail(f"--suggest-reactions: no agent message matches {message!r}")
+        if len(matches) > 1:
+            fail(f"--suggest-reactions: more than one agent message matches {message!r}; include its part and quote")
+        item = matches[0]
+        if names.strip() == "none":
+            item.pop("suggestedReactions", None)
+            continue
+        selected = list(dict.fromkeys(names.split()))
+        if not selected:
+            fail("--suggest-reactions needs reaction names or 'none'")
+        unknown = [name for name in selected if name not in REACTION_NAMES]
+        if unknown:
+            fail(f"--suggest-reactions: unknown reaction {', '.join(unknown)}; choose from {' '.join(REACTION_NAMES)}")
+        item["suggestedReactions"] = selected
+    return {name: json.dumps(items, ensure_ascii=False) if items else None for name, items in lists.items()}
 
 
 def with_gists(replies: str | None, carrying_now: str | None, given: list | None,
@@ -1466,7 +1512,8 @@ def start_version(page: Path, args) -> Path:
         ("--after", args.after), ("--next-round", args.next_round), ("--received", args.received),
         ("--converged", args.converged), ("--reopen", args.reopen), ("--name", args.name), ("--ask", args.ask), ("--updated", args.updated),
         ("--added", args.added),
-        ("--reply", args.reply), ("--done", args.done), ("--gist", args.gist), ("--answered", args.answered),
+        ("--reply", args.reply), ("--suggest-reactions", args.suggest_reactions), ("--done", args.done),
+        ("--gist", args.gist), ("--answered", args.answered),
         ("--settled", args.settled), ("--merge", args.merge), ("--again", args.again), ("--what-changed", args.what_changed), ("--helper", args.helper), ("--owns", args.owns),
         ("--next-step", args.next_step)) if given]
     if clash:
@@ -1557,6 +1604,9 @@ def parse_args(argv) -> argparse.Namespace:
                     help='a part added from their notes (New wins over Updated); pass all --updated/--added entries together: \'[Part] "quote" what was added\'')
     ap.add_argument("--reply", nargs=2, action="append", metavar=("NOTE", "ANSWER"),
                     help='answer one of their notes: \'[Part] "quote" their words\' "your answer"')
+    ap.add_argument("--suggest-reactions", nargs=2, action="append", metavar=("MESSAGE", "REACTIONS"),
+                    help='highlight reactions in an agent message’s picker: \'[Part] "quote" message\' "check up down ask" '
+                         '(names: check up down heart party ask; use none to clear)')
     ap.add_argument("--done", action="append", metavar="NOTE",
                     help='one of their notes, carried out as the user asked: a ✅ answers it')
     ap.add_argument("--gist", nargs=2, action="append", metavar=("NOTE", "SHORT"),
@@ -1650,7 +1700,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail("--feedback-file goes with --received")
     if args.reopen:
         if any((args.converged, args.received, args.next_round, args.new_version, args.copy, args.after, args.name, args.ask,
-                args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns,
+                args.updated, args.added, args.reply, args.suggest_reactions, args.done, args.gist, args.answered,
+                args.settled, args.merge, args.again, args.helper, args.owns,
                 args.appearance, args.what_changed, args.next_step)):
             fail("--reopen goes on its own")
         print(reopen(page, attrs))
@@ -1659,7 +1710,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail("--what-changed and --next-step go with --converged")
     if args.converged:
         if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
-                args.done, args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns, args.appearance)):
+                args.suggest_reactions, args.done, args.gist, args.answered, args.settled, args.merge, args.again,
+                args.helper, args.owns, args.appearance)):
             fail("--converged goes on its own, with --what-changed and --next-step")
         waiting_on = unanswered_asks(page, attrs)
         if waiting_on:
@@ -1676,7 +1728,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         print(converge(page, attrs, args.what_changed, args.next_step or []))
         return 0
     if args.received:
-        if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply, args.done,
+        if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
+                args.suggest_reactions, args.done,
                 args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns, args.appearance)):
             fail("--received goes on its own")
         if attrs and pictures == "on":

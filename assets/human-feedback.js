@@ -1927,8 +1927,12 @@
   }
   // the reaction buttons of a pop-up: each holds its white line icon and, for when it's held ready, its sticker (✅ its own
   // green check), so a ready reaction looks just as it will on the page
-  const reactButtons = () => Object.entries(REACT).map(([k, [ic, name]]) => `<button type="button" class="rb" data-k="${k}" title="${name}" aria-label="${name}">${icon(ic)}`
-    + `${k === 'check' ? icon(ic, 'pn-rdy') : art(k).replace('<svg ', '<svg class="pn-rdy" ')}</button>`).join('');
+  const reactButtons = (suggestions = false) => Object.entries(REACT).map(([k, [ic, name]]) => {
+    const check = k === 'check';
+    const ready = check ? icon(ic, 'pn-rdy') : art(k).replace('<svg ', '<svg class="pn-rdy" ');
+    const suggested = check && suggestions ? art(k).replace('<svg ', '<svg class="pn-rdy pn-suggest-check" ') : '';
+    return `<button type="button" class="rb" data-k="${k}" title="${name}" aria-label="${name}">${icon(ic)}${ready}${suggested}</button>`;
+  }).join('');
   // where a framed page's own pixels sit in this window: the corner of its content, and the scale the reviewed page gives the
   // frame (a transform: scale on the <iframe>, to fit a narrow column). What a frame reports is in its own pixels, so each
   // length is times kx or ky (1 for an unscaled frame, whose offset size is its bounding box)
@@ -2229,7 +2233,7 @@
     .pn-pill .rb{position:relative;overflow:visible}
     .pn-pill .rb .pn-rdy{position:absolute;left:6px;top:6px;pointer-events:none;opacity:0;transition:opacity .12s}
     .pn-pill .rb svg.pn-rdy:not(.pn-ic){left:3.5px;top:3.5px;width:25px;height:25px;overflow:visible}   /* the sticker art's box is 30 units to the icon's 24 */
-    .pn-pill .rb[data-k=check] .pn-rdy path{stroke:#4fd17a;stroke-width:2.2}
+    .pn-pill .rb[data-k=check] .pn-rdy.pn-ic path{stroke:#4fd17a;stroke-width:2.2}
     .pn-pill .rb.charging svg{transform:scale(1.3);transition:transform .2s cubic-bezier(.3,0,.6,1) .05s}
     /* ready: it swells on from where the grow left off and breathes at once. .show in the selector outranks the arrival
        stagger, which otherwise held the breath back by up to .12s, a different wait on each button */
@@ -2847,7 +2851,12 @@
     @media (prefers-reduced-motion: reduce){.pnN-row .row.pn-cf.pn-swap{animation:none}}
     @keyframes pnPeel{to{transform:translate(14px,-22px) rotate(calc(var(--pn-tilt,0deg) + 40deg)) scale(.55);opacity:0}}
     .pn-stk.peel{animation:pnPeel .26s cubic-bezier(.5,0,.75,0) forwards;pointer-events:none}   /* lifts off a corner and flies away */
-    .pnN-rx .rb.on{background:rgba(255,255,255,.22)}
+    .pnN-rx .rb.on{background:none}
+    .pnN-rx .rb:where(.on:not(.charging,:active))>svg{transform:scale(1.22) translateY(-1px)}
+    .pnN-rx:has(.suggested) .rb:not(.suggested,.on,.huge,:hover,:focus-visible)>svg:not(.pn-rdy){opacity:.35}
+    .pnN-rx .rb.on:not(.huge)>svg:not(.pn-rdy){opacity:0}
+    .pnN-rx .rb.on:not(.huge)>.pn-rdy:not(.pn-ic){opacity:1}
+    .pnN-rx .rb.huge>.pn-suggest-check{opacity:0}
     /* grown from a Sticker button: it's already where it lands, so no rise; its reactions come in from the button's end */
     .pnN-rx.grow{transform:none;transition:opacity .06s}
     .pnN-rx.grow.show .rb svg{animation-delay:0s}
@@ -2896,7 +2905,7 @@
        for the emoji, i don't think that's a best practice"); the user's replies in a row stay grouped 4 px apart */
     .pnN-row.ask .qb{margin-bottom:20px} .pnN-row.ask .qb::after{content:'';display:inline-block;width:15px}
     .pnN-row.ask>.qb:has(+.pnF-box){margin-bottom:18px}
-    .pnN-row.ask .qb{font-weight:400} .pnN-row.ask .qb.pn-question{font-weight:400}
+    .pnN-row.ask .qb{font-weight:400} .pnN-row.ask .qb.pn-question{font-weight:700}
     .pnN-row.ask .qb.pn-question::after{font-size:0}   /* the no-break clearance adds no space glyph to a bold question's last line */
     .pnN-row.ask .qb:has(+.qb){margin-bottom:4px} .pnN-row.ask .qb:has(+.qb)::after{display:none} .pnN-row.ask .qb+.qb{border-top-left-radius:var(--pn-R2)}   /* "break things up into paragraphs" */
     .pnN-row.ask .b.re{margin-bottom:20px} .pnN-row.ask .b.re:has(+.b.re){margin-bottom:4px}
@@ -3114,7 +3123,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.162.0', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.163.0', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -6273,7 +6282,7 @@
     s.classList.add('peel'); s.addEventListener('animationend', done, { once: true });
   }
   // a row's sticker button: the reactions, to put one on any note, swap it, or pick it again to peel it off
-  const rxBar = el(`<div class="pn-ui pn-pill pnN-rx">${PN.reactButtons()}</div>`);
+  const rxBar = el(`<div class="pn-ui pn-pill pnN-rx">${PN.reactButtons(true)}</div>`);
   WRAP.appendChild(rxBar);
   let rxFor = null, rxFrom = 'row';   // rxFrom: which column's sticker opened it, so Celebrate's confetti blooms there
   let rxHover = false, rxFace = null, rxHoverT = 0, rxLeaveT = 0, rxAt = 0;   // rxHover: opened by pointing, so it closes once the pointer leaves
@@ -6287,7 +6296,17 @@
   // the sticker over it), which it grows from. On the page the picker opens next to the sticker, below it when there's room
   function openRx(n, btn, from = 'row', grow = false, face = btn) {
     tipHide(false);
-    rxFor = n; rxFrom = from; rxFace = face; rxBar.querySelectorAll('.rb').forEach((b) => b.classList.toggle('on', b.dataset.k === n.react));
+    rxFor = n; rxFrom = from; rxFace = face;
+    const suggested = askOf(n.id)?.suggestedReactions;
+    rxBar.querySelectorAll('.rb').forEach((b) => {
+      const selected = b.dataset.k === n.react;
+      const hint = Array.isArray(suggested) && suggested.includes(b.dataset.k);
+      b.classList.toggle('on', selected);
+      b.classList.toggle('suggested', hint);
+      b.setAttribute('aria-pressed', String(selected));
+      if (hint) b.setAttribute('aria-description', 'Suggested response');
+      else b.removeAttribute('aria-description');
+    });
     rxBar.querySelector('.rb[data-k=party]').hidden = false;
     const r = btn.getBoundingClientRect(), w = rxBar.offsetWidth, h = rxBar.offsetHeight;
     let L, T;
