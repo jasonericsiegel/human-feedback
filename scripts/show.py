@@ -606,7 +606,8 @@ def show(page: str, browser: str, reopen: bool = False, plain: bool = False,  # 
             import review_proof  # pylint: disable=import-outside-toplevel
             errors = review_proof.check_file(path, marked_only=True)
             if errors:
-                print("human-feedback: Review refused: " + "; ".join(errors), file=sys.stderr)
+                print("human-feedback: Review refused: " + "; ".join(errors)
+                      + f". Copy {add_notes.PROOF_TEMPLATE} into the page and fill it in.", file=sys.stderr)
                 return 1
         untagged = not plain and not web_page and bare(path)
         automatic = None

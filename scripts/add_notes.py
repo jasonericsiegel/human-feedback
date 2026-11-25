@@ -118,13 +118,11 @@ its words make it a different question, so the old one would carry beside it. It
 plain re-run's lists; each thread once.
 
 Changes: --updated marks changed content; --added marks a part added in response to the user's notes:
-'[Part label] "quote" one line on what changed or was added'. Each is a thread: New for an added part, Updated for
-changed content. New wins for every change thread on a part marked --added, even when --updated also names it. Questions
-have no New pill; the purple open dot and counts still mark open threads. Change threads stay open until the user responds
-(any reaction will do), so Copy's reminder catches one the user passed over; responses go in Your updates. Both flags need
-a part, as a question does. A run with either replaces the whole change list: pass all --updated and --added entries
-together (data-updated, [{id, block, quote, text, added?}]). A plain re-run keeps it; a new version or --next-round starts
-with none. They are never carried, so one the user left goes with its round.
+'[Part label] "quote" one line on what changed or was added'. New marks every notice on an added part. Updated marks
+existing content. The notice starts outside the thread count and Copy reminder. Select it to reply or react. A question
+opens a thread waiting for the agent. Responses copy under Your updates. Pass all --updated and --added entries together
+(data-updated, [{id, block, quote, text, added?}]). A plain re-run keeps them. A new version or --next-round starts with
+none. A notice stays in the round that flagged it.
 
 Previous version: a new version (--new-version, or --after) also writes .<new page file>.prev.js beside it, once, calling
 PN_PREV with {from, at, html}: the version before it as it was then, minus the tag, hold style and scripts, for the wipe.
@@ -148,9 +146,10 @@ and the summary: each --what-changed is one bullet of What we did across all ver
 "We"; it warns about any that doesn't, and about more than 5), and each --next-step is one thing to do next
 (optional; it warns about any that doesn't start with "You" or "Your agent"). --what-didnt is no longer used:
 accepted and ignored with a warning. The page's bar reads Done and the summary covers their
-notes column, with every thread of the round listed under it; their Unlock reopens the loop. It stops, naming them, while a
-question of the agent's went to the page after the user's last paste (--received): the user hasn't answered it yet. A new version (--after) or --next-round takes the done back, and so does --reopen, which deletes the done files and nothing else, for a Done the user didn't mean to give. It runs on
-its own and leaves the tag alone.
+notes column, with every thread of the round listed under it; their Unlock reopens the loop. It names and refuses
+unanswered questions in the latest version. Record Copy text with --received --feedback-file or close an answered or moot
+question. A new version (--after) or --next-round takes Done back. --reopen deletes the Done files for a Done the user
+didn't mean to give. --converged runs on its own and leaves the tag alone.
 
 Hold: --hold readies the page without opening it; it changes nothing on the page.
 
@@ -203,6 +202,8 @@ SCRIPT_EL = re.compile(r"<script\b[^>]*>.*?</script\s*>", re.S | re.I)   # a who
 SCRIPT = re.compile(r"(<script\b[^>]*>).*?(</script\s*>)", re.S | re.I)
 STYLE_EL = re.compile(r"<style\b[^>]*>.*?</style\s*>", re.S | re.I)   # a [data-note] selector is no part
 TAG = re.compile(r"<!-- human-feedback -->(.*?)<!-- /human-feedback -->", re.S)
+COMMENT = re.compile(r"<!--.*?-->", re.S)   # a data-note named in a comment is no part
+PROOF_TEMPLATE = Path(__file__).resolve().parents[1] / "references" / "template-review-proof.html"
 ATTR = re.compile(r'([\w-]+)="([^"]*)"')
 BODY_END = re.compile(r"</body\s*>", re.I)
 HOLD = re.compile(r"<!-- human-feedback hold -->.*?<!-- /human-feedback hold -->\n?", re.S)
@@ -1037,6 +1038,7 @@ def report(page: Path, text: str, round_no: int, entries: list[dict], others: li
     body = STYLE_EL.sub("", BLOCK.sub("", text))
     drawn = any(LABEL.search(m.group(0)) for m in SCRIPT.finditer(body))
     body = SCRIPT.sub(r"\1\2", body)   # a data-note in the page's own script is a part it draws, not one written here
+    body = COMMENT.sub("", body)
     for warning in check_parts(body):
         if not (drawn and warning.startswith("no data-note")):
             warn(warning)
@@ -1073,10 +1075,12 @@ def version_files(page: Path, attrs: dict) -> list[Path]:
     return [e["path"] for e in load_set(page, attrs) if e["path"].parent.is_dir()] or [page]
 
 
-def receive(page: Path, attrs: dict) -> str:
+def receive(page: Path, attrs: dict, feedback_file: Path | None) -> str:
     """Write the receipt beside the page and every version of it; say what was done."""
     if not attrs:
         fail(f"notes aren't on for {page}: run add_notes.py on it first")
+    if feedback_file is not None:
+        record_question_status(page, attrs, feedback_file)
     when = int(time.time() * 1000)
     files = version_files(page, attrs)
     for f in files:
@@ -1111,44 +1115,117 @@ def reopen(page: Path, attrs: dict) -> str:
             "the notes column and Copy again")
 
 
-def unanswered_asks(page: Path, attrs: dict) -> list[str]:
-    """Questions still active in the latest version, authored after the last receipt.
+STILL_OPEN = re.compile(r"Still open(?: \(questions asked through (\S+)\))?: (none|\w+(?:, \w+)*)")
+OLD_STATUS = "Review question status: "   # copied by a tab opened before 1.161.0
 
-    Naming or rewriting a version changes data-made, not when its questions were asked. Earlier versions keep their
-    history, but a question settled or dropped from the latest version must not hold Done open there.
-    """
-    entries = load_set(page, attrs) or [{"path": page}]
-    tags = [(e["path"], read_tag(e["path"].read_text(encoding="utf-8")))
-            for e in entries if e["path"].is_file()]
-    if not tags:
-        return []
-    latest, tag = tags[-1]
-    closed = {x.get("id") for x in listed(tag, "data-answered")}
-    asks = listed(tag, "data-asks") + [a for a in listed(tag, "data-carry") if a.get("kind") == "ask"]
-    receipts = [dot_file(f, "received.js").stat().st_mtime for f in version_files(page, attrs)
-                if dot_file(f, "received.js").exists()]
-    received = max(receipts, default=float("-inf"))
-    out = []
+
+def question_key(question: dict) -> tuple[str, str]:
+    return question["id"], question.get("authoredAt") or ""
+
+
+def active_questions(tag: dict) -> list[dict]:
+    closed = {x.get("id") for x in listed(tag, "data-answered") if x.get("answer")}
+    carried = [a for a in listed(tag, "data-carry") if a.get("kind") == "ask"]
+    asks = {a["id"]: a for a in carried + listed(tag, "data-asks") if a.get("id") and a["id"] not in closed}
+    return list(asks.values())
+
+
+def moment(when: str | None) -> float | None:
+    """A date's time, or None when there is none to read."""
+    try:
+        return datetime.fromisoformat(when or "").timestamp()
+    except ValueError:
+        return None
+
+
+def names_page(page: Path, attrs: dict, paste: str) -> bool:
+    """Whether the paste is a copy of this page: it's the one under Notes on, or the latest of the Versions."""
+    named = [re.sub(r" \(\d+\)$", "", line.removeprefix("Notes on "))
+             for line in paste.splitlines() if line.startswith("Notes on ")]
+    named += re.findall(r"^Round \d+[^\n]* \(latest\): (.+)$", paste, re.M)
+    return bool({str(page), str(page.resolve()), page_id(page), attrs.get("data-page")}.intersection(named))
+
+
+def still_open_status(page: Path, attrs: dict, asks: list[dict], line: str, paste: str) -> list[list]:
+    """The line names the open questions; every other one the copied page held is answered. One asked after the page's
+    newest question was never on it, so it stays open."""
+    found = STILL_OPEN.fullmatch(line.strip())
+    through = moment(found[1]) if found else None
+    if not found or (found[1] and through is None):
+        fail("--feedback-file: could not read the Still open line. Use the full Copy text.")
+    if not names_page(page, attrs, paste):
+        fail("--feedback-file: the paste does not name this page as its latest version")
+    still = set(found[2].split(", "))
+    records = []
     for ask in asks:
-        if ask.get("id") in closed:
-            continue
-        origin = ask.get("from")
-        source = entries[origin - 1]["path"] if isinstance(origin, int) and 0 < origin <= len(entries) else latest
-        old = next((t for f, t in tags if f == source), {})
-        try:
-            authored = datetime.fromisoformat(ask.get("authoredAt") or old.get("data-made") or "").timestamp()
-        except ValueError:
-            continue   # no known authoring time on a legacy question
-        if received < authored:
-            out.append(ask.get("text") or "")
-    return out
+        asked = moment(ask.get("authoredAt"))
+        held = asked is None or (through is not None and asked <= through)
+        records.append([*question_key(ask), held and ask["id"] not in still])
+    return records
+
+
+def old_status(attrs: dict, asks: list[dict], line: str) -> list[list]:
+    """The list of every question that a tab opened before 1.161.0 copies."""
+    try:
+        snapshot = json.loads(line)
+        records = snapshot["questions"]
+        if snapshot["page"] != attrs.get("data-page") or snapshot["round"] != int(attrs["data-round"]):
+            fail("--feedback-file: the question status is for a different page or round")
+        if not isinstance(records, list) or any(not isinstance(row, list) or len(row) != 3
+                or not all(isinstance(value, str) for value in row[:2]) or type(row[2]) is not bool for row in records):
+            raise ValueError("invalid question records")
+    except (ValueError, TypeError, KeyError):
+        fail("--feedback-file: could not read the question status. Use the full Copy text.")
+    known = {question_key(a) for a in asks}
+    return [row for row in records if (row[0], row[1]) in known]
+
+
+def read_question_status(page: Path) -> list[list]:
+    sidecar = dot_file(page, "question-status.json")
+    if sidecar.is_file():
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    return []
+
+
+def record_question_status(page: Path, attrs: dict, feedback_file: Path) -> None:
+    """Save which of the page's questions the paste leaves open, in place of what an earlier paste said. The note text
+    stays in the user's paste."""
+    try:
+        paste = feedback_file.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except (OSError, UnicodeError) as exc:
+        fail(f"--feedback-file: {exc}")
+    lines = [line for line in paste.splitlines() if line.startswith(("Still open:", "Still open (", OLD_STATUS))]
+    asks = active_questions(attrs)
+    if not lines:
+        if asks:
+            warn("the paste has no Still open line, so no question was closed. Use the full Copy text, or --answered with "
+                 "the user's words.")
+        return
+    if lines[-1].startswith(OLD_STATUS):
+        records = old_status(attrs, asks, lines[-1][len(OLD_STATUS):])
+    else:
+        records = still_open_status(page, attrs, asks, lines[-1], paste)
+    if records:
+        write_sidecar(dot_file(page, "question-status.json"), json.dumps(records) + "\n")
+
+
+def unanswered_asks(page: Path, attrs: dict) -> list[str]:
+    """A receipt alone does not answer any question in the latest version."""
+    files = [f for f in version_files(page, attrs) if f.is_file()]
+    if not files:
+        return []
+    latest = read_tag(files[-1].read_text(encoding="utf-8"))
+    newest = next((rows for rows in map(read_question_status, reversed(files)) if rows), [])
+    status = {(i, dated): closed for i, dated, closed in newest}
+    return [a["text"] for a in active_questions(latest) if not status.get(question_key(a))]
 
 
 def converge(page: Path, attrs: dict, changed: list[str], steps: list[str]) -> str:
     """Write the done file, with the summary, beside the page and every version of it; say what was done."""
     if not attrs:
         fail(f"notes aren't on for {page}: run add_notes.py on it first")
-    record = {"at": int(time.time() * 1000), "changed": [c.strip() for c in changed if c.strip()],
+    record = {"at": int(time.time() * 1000), "questionsChecked": True,
+              "changed": [c.strip() for c in changed if c.strip()],
               "next": [x.strip() for x in steps if x.strip()]}
     body = json.dumps(record, ensure_ascii=False).replace("</", "<\\/")   # nothing in it can close the script
     files = version_files(page, attrs)
@@ -1449,6 +1526,7 @@ def parse_args(argv) -> argparse.Namespace:
                     help='ask again, shorter, a question or reply left unanswered that still needs an answer: '
                          '\'[Part] "quote" what the page asked\' "shorter words"; it replaces the old thread')
     ap.add_argument("--received", action="store_true", help="their paste reached the agent: lock what the user sent")
+    ap.add_argument("--feedback-file", type=Path, help="full Copy text to record with --received")
     ap.add_argument("--converged", action="store_true", help="the loop is done: the page says Done, with a summary")
     ap.add_argument("--reopen", action="store_true", help="take back a Done: the page is open for notes again")
     ap.add_argument("--what-changed", action="append", metavar="CHANGE",
@@ -1490,7 +1568,7 @@ def require_review_proof(page: Path) -> None:
     import review_proof  # pylint: disable=import-outside-toplevel
     errors = review_proof.check_file(page)
     if errors:
-        fail("Review refused: " + "; ".join(errors))
+        fail("Review refused: " + "; ".join(errors) + f". Copy {PROOF_TEMPLATE} into the page and fill it in.")
 
 
 def main(argv=None, *, analytics_url: str | None = None) -> int:
@@ -1521,6 +1599,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
     agent = " ".join((args.agent or "").split()) or attrs.get("data-agent")   # a run without --agent keeps the last name
     if agent and len(agent) > AGENT_MAX:
         fail(f"--agent is a name, {AGENT_MAX} characters at most: {agent[:AGENT_MAX + 10]}…")
+    if args.feedback_file and not args.received:
+        fail("--feedback-file goes with --received")
     if args.reopen:
         if any((args.converged, args.received, args.next_round, args.new_version, args.copy, args.after, args.name, args.ask,
                 args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.settled, args.again, args.helper, args.owns,
@@ -1536,9 +1616,10 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
             fail("--converged goes on its own, with --what-changed and --next-step")
         waiting_on = unanswered_asks(page, attrs)
         if waiting_on:
-            fail(f"--converged: {len(waiting_on)} of your questions went to the page after their last paste, so they "
-                 "haven't answered yet: " + "; ".join(f'"{t}"' for t in waiting_on) + ". Wait for their answers. One they "
-                 "answered in chat closes with --answered; one that no longer matters, drop with a re-run without it.")
+            fail(f"--converged: {len(waiting_on)} unanswered question(s): "
+                 + "; ".join(f'"{t}"' for t in waiting_on)
+                 + ". Record the full Copy text with --received --feedback-file, or use --answered for a question "
+                 "the user answered elsewhere. Use --settled for a carried question the changes made moot.")
         if not args.what_changed:
             fail("--converged needs at least one --what-changed")
         warn_bullets(args.what_changed)
@@ -1553,7 +1634,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
             fail("--received goes on its own")
         if attrs and pictures == "on":
             make_folder(feedback_folder(page, workspace, attrs))
-        print(receive(page, attrs))
+        print(receive(page, attrs, args.feedback_file))
         return 0
     unplaced = (unplaced_asks(text, args.ask or []) + unplaced_asks(text, args.updated or [], "--updated")
                 + unplaced_asks(text, args.added or [], "--added"))

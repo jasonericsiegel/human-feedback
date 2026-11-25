@@ -427,8 +427,11 @@
   let waitT = 0;
   const waiting = () => { const last = sent.copies[sent.copies.length - 1]; return !!last && (sent.at || 0) < last.t && Date.now() - last.t < 30 * 60e3; };
   function wait() { clearTimeout(waitT); if (!waiting()) return; checkReceipt(); waitT = setTimeout(wait, 3000); }
-  function copied(t, drafts) {
+  function copied(t, drafts, byNotes) {
     settleCopiedReplies(drafts);
+    // Keep the decision made with this version's headings. Later versions can rewrite those headings.
+    state.answeredByNotes = byNotes;
+    save();
     sent.copies = [...sent.copies.slice(-19), { t, ov: state.overall }];
     Object.assign(sent, { to: t, ov: state.overall, unlocked: false }); keepSent(); wait();
     window.PN?.onSent?.('lock');
@@ -456,10 +459,8 @@
   // its questions, with the user's note's words above the reply
   ASKS = [...ASKS, ...tagList('replies').map((r, i) => ({ ...r, id: String(r.id || 'r' + i), said: String(r.said || ''), reply: true }))];
   // what changed or was added since the user's notes ([{id, block, quote, text, added?}], add_notes.py --updated/--added):
-  // each one a thread with New for an added part (before Updated), otherwise Updated, open until the user responds (any reaction
-  // will do), so Copy's reminder catches one the user passed over. They ask for no answer and are never carried: one the user
-  // leaves goes with its round (the user: "if they don't acknowledge though, the pointers don't persist to the following round";
-  // "as threads"; "let's call it 'Updated'")
+  // Notices stay beside their changed words, with New for an added part and Updated for existing content.
+  // Responses are kept and copied as updates. The original notice stays in its round.
   ASKS = [...ASKS, ...tagList('updated').map((u, i) => ({ ...u, id: String(u.id || 'u' + i), upd: true }))];
   // --done closes the user's note where the user wrote it. Each version's done list travels in data-versions, so an earlier page
   // can put the check on its own note; no done mark becomes a thread in the new round.
@@ -516,11 +517,21 @@
   }
   const closedByNotes = (a, notes = state.notes) => !a.reply && !!a.block && (notes || []).some((n) => closesQuestion(a, n));
   const threadClosed = (a) => replied(state.answers[a.id]) || closedByNotes(a);
+  const questionKey = (a) => [String(a.id), a.authoredAt || ''];
   const CARRY = tagList('carry');
+  const carriedClosed = [];
   if (CARRY.length) {
     const have = new Set(ASKS.map((a) => a.id)), past = ASKS_OPEN ? pastStores() : [];
     const kept = CARRY.filter((c) => c && typeof c === 'object' && c.id && c.text && !have.has(String(c.id)) && have.add(String(c.id)))
-      .filter((c) => (ASKS_OPEN ? !past.some((s) => gave((s.answers || {})[c.id]) || (s.round >= (+c.from || 0) && closedByNotes({ ...c, reply: c.kind === 'reply' }, s.notes))) : gave(state.answers[c.id])))
+      .filter((c) => {
+        if (!ASKS_OPEN) return gave(state.answers[c.id]);
+        const closed = past.some((s) => gave(s.answers?.[c.id]) || (s.round >= (+c.from || 0)
+          && (s.answeredByNotes
+            ? s.answeredByNotes.some(([id, at]) => id === String(c.id) && at === (c.authoredAt || ''))
+            : closedByNotes({ ...c, reply: c.kind === 'reply' }, s.notes))));
+        if (closed && c.kind === 'ask') carriedClosed.push(c);
+        return !closed;
+      })
       .map((c) => ({ id: String(c.id), block: c.block, quote: c.quote, text: String(c.text), authoredAt: c.authoredAt, from: +c.from || 0, carried: true, ...(c.kind === 'reply' ? { reply: true, said: String(c.said || ''), gist: c.gist } : {}) }));
     kept.forEach((a) => tie(a.id));
     ASKS.push(...kept);
@@ -1769,6 +1780,17 @@
     return { groups: V ? LIST.map((v, i) => ({ v, i, it: itemsOf(i) })) : [{ it: items() }], questions: questions(),
       ovt: !!state.overall.trim() && !ovSent(), ovf: liveOvFiles() };
   }
+  // Copy's last line names only the questions still open, even when Copy sends only new feedback. Every other question the
+  // page holds is answered, so the line says how new its newest question is: one asked since (this tab never loaded it) stays open
+  function reviewQuestions() {
+    const active = ASKS.filter((a) => answerable(a) && !a.reply && !a.upd), asked = [...active, ...carriedClosed];
+    const byNotes = active.filter((a) => closedByNotes(a)).map(questionKey);
+    const open = active.filter((a) => !gave(state.answers[a.id]) && !closedByNotes(a)).map((a) => String(a.id));
+    const through = asked.map((a) => a.authoredAt || '').filter((d) => !isNaN(Date.parse(d)))
+      .reduce((x, d) => (!x || Date.parse(d) > Date.parse(x) ? d : x), '');
+    const line = asked.length ? `Still open${through ? ` (questions asked through ${through})` : ''}: ${open.join(', ') || 'none'}` : '';
+    return { byNotes, line };
+  }
   // the copy's first line tells a fresh session how to read the rest (the user: "Apply these notes using the human-feedback
   // skill after reading its paste-format reference."), and a local page is named by its full path so any session finds it
   const HEAD = 'Apply these notes using the human-feedback skill after reading its paste-format reference.';
@@ -1828,9 +1850,12 @@
     if (frameSession) await settleFrameEdit();
     const t = Date.now();   // lock the words in this snapshot, even if the clipboard write takes time
     all = sentOn() && !count();   // locked, nothing new: Copy again copies everything that went, and it stays locked
-    let text = '', usage = null, drafts = [];
+    let text = '', usage = null, drafts = [], byNotes = [];
     try {
-      const data = copyData(); text = serialize(data);
+      const data = copyData(), review = reviewQuestions();
+      text = serialize(data);
+      byNotes = review.byNotes;
+      if (review.line) text += '\n\n' + review.line;
       drafts = data.questions.map((x) => x.localDraft).filter(Boolean);
       try { usage = copyCounts(data); } catch (e) { /* counts never affect Copy */ }
     } finally { all = false; }
@@ -1838,7 +1863,7 @@
     try { if (window.parent !== window) window.parent.postMessage({ type: 'notes-copied', text }, '*'); } catch (e) { /* no parent */ }
     if (ok) {
       try { if (usage) window.PN?.countCopied?.(usage); } catch (e) { /* counts never affect Copy */ }
-      copied(t, drafts);
+      copied(t, drafts, byNotes);
     }
     return ok;
   }
@@ -2350,6 +2375,7 @@
     html.${P}sb:not(.${P}tight){scrollbar-width:none} html.${P}sb:not(.${P}tight)::-webkit-scrollbar{display:none}
     .${P}sp{display:none} body.${P}R-open .${P}sp{display:block;height:var(--${P}foot,0px)}
   `);
+  const BUBBLE_MS = 330, BUBBLE_EASE = 'cubic-bezier(.2,.75,.25,1)';
   css(`
     .pn-root{display:contents}
     /* a column opened as a sheet (fitCols) lies over the page, which keeps its rail-width margin */
@@ -2559,8 +2585,8 @@
     .pnN-bar{transition:width .28s ease,background ${GROUND}ms ease,color ${GROUND}ms ease,border-color ${GROUND}ms ease}
     .pnN-bar.pn-still{transition:width .28s ease}   /* a state loaded or followed from another tab, not arriving: no fade */
     .pnN-bar .rcv{display:flex;align-items:center;gap:7px;min-width:0;white-space:nowrap;font:500 14px/1.4 var(--pn-ui);color:inherit}
-    .pnN-bar:not([data-st=copied]) .rcv:empty,.pnR-rail .pnN-bar .rcv:empty{display:none}
-    .pnN-bar[data-st=copied] .rcv:empty{min-height:1.4em}   /* copied: an empty slot a line tall, where the cursor clicks Received in */
+    .pnN-bar:not([data-st=copied],.pn-slot) .rcv:empty,.pnR-rail .pnN-bar .rcv:empty{display:none}
+    .pnN-bar:is([data-st=copied],.pn-slot) .rcv:empty{min-height:1.4em}   /* copied, or Done on its way: an empty slot a line tall, where the cursor clicks Received or Done in */
     .pnN-bar .rcv .pn-ic{flex:none;width:17px;height:17px}
     .pnN-bar[data-st=copied] .rcv{color:var(--pn-muted)}
     .pnN-bar:is([data-st=received],[data-st=updating]){background:var(--pn-ink);color:var(--pn-white)}
@@ -2908,6 +2934,8 @@
     .pnN-row>.new,.pnN-row>.h>.new{margin-bottom:8px;flex:none;display:inline-flex;align-items:center;height:17px;padding:0 7px;border-radius:9px;background:var(--pn-ink);color:var(--pn-white);font:600 12px/17px var(--pn-ui)}
     .pnN-row .b.pn-in{animation:pnRise .28s cubic-bezier(.2,.7,.25,1) backwards}   /* a new bubble slides up into place, as in the writing app's chat */
     @keyframes pnRise{from{opacity:0;translate:0 10px}}
+    .pnN-row .b.pn-in:where(.re),.pnN-row .ew-ans .b.ew-rise{transform-origin:top right;animation:pnBubbleIn ${BUBBLE_MS}ms ${BUBBLE_EASE} backwards}
+    @keyframes pnBubbleIn{from{opacity:0;scale:.4}to{opacity:1;scale:1}}
     @media (prefers-reduced-motion: reduce){.pnN-row .b.pn-in{animation:none}}
     .pnN-row textarea.re{margin-top:8px}
     .pnN-row.dm .qb{color:var(--pn-muted)}
@@ -2938,7 +2966,7 @@
     .pnN-row .ew-ans .b.was.tb{margin-bottom:0}
     .pnN-row .ew-src{margin-top:26px;font:500 13px/1.3 var(--pn-ui);color:var(--pn-muted);text-align:right}   /* clears the check hanging under a short bubble */
     .pnN-row.ew .qk{opacity:.6} .pnN-row.ew-live .qk{opacity:0}   /* the check is in the cursor's hand until stamped */
-    .pnN-row .ew-ans .ew-rise{animation:pnRise .28s cubic-bezier(.2,.7,.25,1) both}
+    .pnN-row .ew-ans .ew-src.ew-rise{animation:pnRise .28s cubic-bezier(.2,.7,.25,1) both}
     .pnN-row .rg{position:absolute;box-sizing:border-box;border-radius:50%;border:2px solid #30b456;opacity:0;pointer-events:none}   /* the ring a stamped check sends out */
     .pnN-row.dm .lbl.pn-wi{animation:pnWordIn .18s ease-out} .pnN-row.dm .lbl.pn-wo{animation:pnWordOut .1s ease-in forwards}   /* its label turning to Done */
     .pnN-row.ew-still,.pnN-row.ew-still *{transition:none !important}   /* measuring its two heights */
@@ -3086,7 +3114,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.159.3', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.161.1', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -3489,6 +3517,9 @@
     .pnN-row>.h{justify-content:flex-end}
     .pnN-row>.h:has(>.new){display:inline-flex;vertical-align:middle;min-height:18px;height:18px;margin-bottom:6px;padding:0;justify-content:flex-start}
     .pnN-row>.new{vertical-align:middle;margin-bottom:6px}
+    .pnN-row>button.new{border:0;cursor:pointer}
+    .pnN-row>button.new:focus-visible{outline:2px solid var(--pn-me);outline-offset:3px}
+    .pn-notice-pending{display:inline-block;vertical-align:middle;margin:0 16px 6px 6px;color:var(--pn-muted);font:600 13px/18px var(--pn-ui)}
     .pn-thread-position>.pn-open-dot{right:16px;top:21px}
     .pnN-row>.h>.new{margin-bottom:0}
     /* Current messages stand apart from the native pale bubbles of carried rounds: one step lighter than the 1.151 grey, with light text on
@@ -3497,6 +3528,7 @@
     :root.pn-dark{--pn-current-bub:#52525a;--pn-current-ink:#f5f5f7}
     .pnN-row .qb[data-age="current"]{background:var(--pn-current-bub);color:var(--pn-current-ink)}
     .pnN-row .qb[data-age="prior"]{background:var(--pn-bub);color:var(--pn-ink)}
+    .pnN-row.pn-notice .qb[data-age]{background:transparent;color:var(--pn-ink);padding-inline-start:0}
     .pnN-row .pn-day{display:grid;place-items:center;min-height:18px;margin:12px 0 6px;color:var(--pn-muted);font:600 12.6px/1.4 var(--pn-ui);text-align:center;cursor:help;outline-offset:4px}
     .pnN-row .pn-day:focus-visible{outline:2px solid var(--pn-me);border-radius:4px}
     .pnN-row>.pn-day{opacity:1}
@@ -3540,7 +3572,7 @@
     .pn-tight.pnR-rail .pnN-bar{top:auto;right:14px;bottom:calc(14px + env(safe-area-inset-bottom,0px));width:42px;height:42px;padding:0;gap:0;justify-content:center;
       overflow:visible;border:1px solid var(--pn-hair);border-radius:50%;box-shadow:0 2px 10px rgba(0,0,0,.24)}
     .pn-tight.pnR-rail .pnN-bar>:not(.tg){display:none}
-    .pn-tight.pnR-rail .pnN-bar.pn-questions::after{content:"";position:absolute;top:0;right:0;width:10px;height:10px;border-radius:50%;background:var(--pn-open);box-shadow:0 0 0 2px var(--pn-side)}
+    .pn-tight.pnR-rail .pnN-bar.pn-questions:not(.pn-checked-done)::after{content:"";position:absolute;top:0;right:0;width:10px;height:10px;border-radius:50%;background:var(--pn-open);box-shadow:0 0 0 2px var(--pn-side)}
     /* a thread on a part in a closed tab waits with its part; stepping to it opens the tab (showPart) */
     .pnN-row.pn-away,.pnR-rail .pnN-mk.pn-away{display:none}
   `);
@@ -3661,8 +3693,20 @@
   if (PN.ASKS_OPEN) PN.ASKS.filter((a) => PN.answerable(a) && !PN.fromRound(a) && !PN.replied(state.answers[a.id]) && !ewSeen[a.id]).forEach((a) => { if (reduced()) ewKeep(a.id); else { postLive.add(a.id); postStep.set(a.id, 'held'); } });
   const ewOpen = (a) => !!a.ew && ewLive.has(a.id);
   // new questions count when the bubble lands; carried questions are there from the start
-  const openQuestion = (a) => PN.answerable(a) && !postLive.has(a.id) && !PN.threadClosed(a);
-  const newTag = (a) => a.added ? '<span class="new">New</span>' : a.upd ? '<span class="new upd">Updated</span>' : '';
+  const noticeRequestsReply = (a) => {
+    if (!a.upd) return false;
+    const answer = state.answers[a.id];
+    return answer?.react === 'ask' || PN.repliesOf(answer).some((text) =>
+      /[?？]/u.test(text) && agentParts(text).some((part) => part.question));
+  };
+  const openQuestion = (a) => !bar.classList.contains('pn-checked-done') && PN.answerable(a)
+    && !postLive.has(a.id) && (a.upd ? noticeRequestsReply(a) : !PN.threadClosed(a));
+  function newTag(a, selectable = false) {
+    if (!a.upd) return '';
+    const label = a.added ? 'New' : 'Updated', name = a.added ? 'new' : 'new upd';
+    return selectable ? `<button type="button" class="${name}" aria-label="Select ${label} notice">${label}</button>`
+      : `<span class="${name}">${label}</span>`;
+  }
   // while the cursor works on one, the step it's at: 1 clicked into its Reply box and typing (ewTyped: how much is in), 2
   // out of the box with the user's bubble in, 3 the ✅ stamped on, 4 let go
   const ewStep = new Map(), ewTyped = new Map();
@@ -3719,32 +3763,37 @@
   const dots = () => `<span class="td" role="img" aria-label="${esc(PN.AGENT || 'Agent')} is typing" style="--pn-ph:-${Math.round(performance.now() % 1200)}ms"><i></i><i></i><i></i></span>`;
   // it arrives (the user: "the bubble starting as 1 line and expanding like a real message once it comes through, the thread
   // box growing with it"; "research how popular messaging platforms like imessage would display this ... and just do it
-  // the same way"): the bubble grows from the dots to the whole message in one quick spring, its words, set at the width
+  // the same way"): the bubble grows from the dots to the whole message from its top left, its words, set at the width
   // they end at so they never reflow, fading in as it opens, and the Reply box unfolds under it in the same move, so the
   // thread grows once. The rows below follow it frame by frame (layout's glides wait for it)
-  const GROW = 'cubic-bezier(.3,1.25,.55,1)';   // a quick spring, a touch past and back
+  function agentBubbleIn(bubble, elapsed = 0) {
+    const origin = 'top left';
+    return bubble.animate([{ opacity: 0, scale: .4, transformOrigin: origin }, { opacity: 1, scale: 1, transformOrigin: origin }],
+      { duration: BUBBLE_MS * SLOW, delay: -elapsed, easing: BUBBLE_EASE, fill: 'backwards' });
+  }
   function postArrive(id) {
     const from = lastQb(ewEl(id))?.getBoundingClientRect();
     if (!postLive.has(id)) return;
     postLive.delete(id); postStep.delete(id); ewKeep(id);
     opNote(AGENT, 'arrive:' + id);
-    if (from && !reduced()) moving.set('q:' + id, { kind: 'grow', t0: performance.now(), ms: 400 * SLOW, play: (r, t) => growIn(r, from, t) });
+    if (from && !reduced()) moving.set('q:' + id, { kind: 'grow', t0: performance.now(), ms: BUBBLE_MS * SLOW, play: (r, t) => growIn(r, from, t) });
     renderRows();   // which plays the grow on the redrawn row (replayMoves)
     if (sel === 'q:' + id) ewEl(id)?.querySelector('textarea')?.focus({ preventScroll: true });   // the user picked it while it typed: the user's Reply box is ready
   }
   // the grow, `t` ms in: its words, in a wrapper at the width they end at, are only uncovered as the bubble opens
   function growIn(r, from, t) {
-    if (r.querySelectorAll(':scope > .qb').length > 1) return;   // "break things up into paragraphs": after one typing bubble, all appear together
-    const qb = lastQb(r); if (!qb) return;
-    const to = qb.getBoundingClientRect(), cs = getComputedStyle(qb), ms = 340 * SLOW;
+    const [qb, ...more] = r.querySelectorAll(':scope > .qb'); if (!qb) return;
+    const to = qb.getBoundingClientRect(), cs = getComputedStyle(qb), ms = BUBBLE_MS * SLOW;
     const words = document.createElement('span'); words.className = 'qg';
-    [...qb.childNodes].filter((n) => n.nodeType === 3).forEach((n, i) => { if (!i) n.before(words); words.append(n); });
+    const content = [...qb.childNodes].filter((n) => !n.matches?.('.ib, .pn-stk'));
+    if (content.length) { qb.prepend(words); words.append(...content); }
     Object.assign(words.style, { display: 'block', width: (to.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) + 'px' });
     Object.assign(qb.style, { display: 'block', overflow: 'hidden' });
-    const anims = [qb.animate([{ width: from.width + 'px', height: from.height + 'px' }, { width: to.width + 'px', height: to.height + 'px' }], { duration: ms, delay: -t, easing: GROW }),
-      words.animate([{ opacity: 0 }, { opacity: 0, offset: 0.2 }, { opacity: 1 }], { duration: ms * 1.15, delay: -t, easing: 'ease-out' })];
+    const anims = [qb.animate([{ width: from.width + 'px', height: from.height + 'px' }, { width: to.width + 'px', height: to.height + 'px' }], { duration: ms, delay: -t, easing: BUBBLE_EASE }),
+      words.animate([{ opacity: 0 }, { opacity: 0, offset: .18 }, { opacity: 1 }], { duration: ms, delay: -t, easing: 'ease-out' }),
+      ...more.map((bubble) => agentBubbleIn(bubble, t))];
     // what comes in under the bubble (the Reply box) unfolds from nothing as it opens
-    const under = []; for (let x = qb.nextElementSibling; x; x = x.nextElementSibling) under.push(x);
+    const under = []; for (let x = (more.at(-1) || qb).nextElementSibling; x; x = x.nextElementSibling) under.push(x);
     under.forEach((x) => {
       const h = x.offsetHeight, m = getComputedStyle(x).marginTop; x.style.overflow = 'hidden';
       anims.push(x.animate([{ height: '0px', marginTop: '0px', opacity: 0 }, { height: h + 'px', marginTop: m, opacity: 1 }], { duration: ms, delay: -t, easing: 'cubic-bezier(.2,.7,.25,1)' }));
@@ -4059,7 +4108,7 @@
     re()?.classList.remove('busy');
   }
   // answered in chat: over the Reply box the arrow turns to a beam; it clicks in and types the user's words, leaves the box (it
-  // folds, the user's bubble rises in with "Answered in chat"), picks up the ✅ and stamps it on the user's bubble's bottom left corner.
+  // folds, the user's bubble grows in with "Answered in chat"), picks up the ✅ and stamps it on the user's bubble's bottom left corner.
   // Its counts stay unchanged: a question answered in chat asks nothing of the user
   async function doChat(cur, id, alive) {
     const a = askBy(id), off = rnd(34, 96), dy = rnd(-3, 3);
@@ -4077,7 +4126,7 @@
     await stamp(cur, id, () => ewShow(id, 3)); alive();
     ewShow(id, 4); ewStep.delete(id); ewTyped.delete(id); ewLive.delete(id);
   }
-  // a tap where a message goes: its row comes in with its typing bubble, rising as the user's bubbles do (on a reply, the user's note is
+  // a tap where a message goes: its row comes in with the typing bubble growing from its corner (on a reply, the user's note is
   // there already, so only the bubble comes in, and the label turns from the user's note's part to Reply)
   function postTap(id) {
     if (postStep.get(id) !== 'held') return;
@@ -4087,9 +4136,12 @@
     const a = askBy(id), mine = r.classList.contains('rp');
     r.classList.remove('ph', 'rp'); lightMarks();
     if (mine && a) swapWords(r.querySelector('.lbl'), postLabel(a, false));
-    const ins = mine ? [lastQb(r)].filter(Boolean) : [...r.children];
-    if (!mine) r.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200 * SLOW, easing: 'ease-out' });
-    ins.forEach((x) => x.animate([{ opacity: 0, translate: '0 12.1px' }, { opacity: 1, translate: '0 0' }], { duration: 280 * SLOW, easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'backwards' }));
+    if (reduced()) return;
+    const bubble = lastQb(r);
+    if (bubble) agentBubbleIn(bubble);
+    if (mine) return;
+    r.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 200 * SLOW, easing: 'ease-out' });
+    [...r.children].filter((x) => x !== bubble).forEach((x) => x.animate([{ opacity: 0, translate: '0 12.1px' }, { opacity: 1, translate: '0 0' }], { duration: 280 * SLOW, easing: 'cubic-bezier(.2,.7,.25,1)', fill: 'backwards' }));
   }
   // a message cut short (the user scrolled, clicked or pressed a key in the opening, or the column shut): it's there at once
   function postLand(id) {
@@ -4128,7 +4180,7 @@
       press(cur); tapRing(cur.x, cur.y); postTap(id);
       await beat(rnd(650, 900)); alive();   // the dots' beat
       postArrive(id);
-      await beat(460); alive();   // the bubble grows into the message
+      await beat(BUBBLE_MS); alive();   // the bubble grows into the message
     } finally { cur.typeAt = null; shapeFor(cur); }
   }
   // the messages still to post: those still held (one tapped in is on its way)
@@ -4179,20 +4231,24 @@
       setTimeout(ewLook, rnd(450, 800) * SLOW); syncPark();
     }
   }
-  // Every row is a thread; only the agent's messages open a loop, and a committed response or the agent closing it resolves it.
+  // Notices remain selectable rows. They join the thread seeker only when the user asks for a reply.
   const loopStates = new Map();
   function allThreads() {
     // a thread in a closed tab has no place on the page: tabs go in page order, so the arrows' order doesn't change as they open
     const home = (t) => { const b = blockEl(partOfRow(t.id)); return { b, panel: b?.closest('[role="tabpanel"]') || null, gone: away(b) }; };
-    return [...col.querySelectorAll('.pnN-row[data-id]')].map((row, i) => ({ id: row.dataset.id, row, i, y: anchorY(row.dataset.id), ...home({ id: row.dataset.id }) }))
+    return [...col.querySelectorAll('.pnN-row[data-id]:not(.pn-notice)')].map((row, i) => ({ id: row.dataset.id, row, i, y: anchorY(row.dataset.id), ...home({ id: row.dataset.id }) }))
       .sort((a, b) => {
         if (a.b && b.b && a.b !== b.b && (a.panel !== b.panel || (a.gone && b.gone))) return a.b.compareDocumentPosition(b.b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
         return a.y - b.y || a.i - b.i;
       });
   }
   function threadWaiting(t) {
-    const a = t.id.startsWith('q:') && askBy(t.id.slice(2));
-    return !!a && openQuestion(a);   // open means waiting on the user: the user's own notes and edits never count (the user: "open because they're waiting on me to close them, not threads i just created myself")
+    const a = askOf(t.id);
+    return !!a && openQuestion(a);
+  }
+  function waitingOnUser(t) {
+    const a = askOf(t.id);
+    return !!a && !a.upd && openQuestion(a);
   }
   function popLoop(rect, id = 'badge') {
     if (reduced() || !rect || !rect.width || rect.top < 0 || rect.bottom > innerHeight) return;
@@ -4261,7 +4317,11 @@
       const on = ids.has(t.id), before = loopStates.get(t.id);
       t.row.classList.toggle('wait', on);
       let dot = position.querySelector('.pn-open-dot');
-      if (on && !dot) { dot = el('<span class="pn-open-dot" role="img" aria-label="Open thread" title="Open thread"></span>'); position.append(dot); }
+      if (on && !dot) {
+        const description = askOf(t.id)?.upd ? 'Awaiting an agent reply' : 'Open thread';
+        dot = el(`<span class="pn-open-dot" role="img" aria-label="${description}" title="${description}"></span>`);
+        position.append(dot);
+      }
       if (!on && dot) dot.remove();
       if (before?.open === false && on && ui.notes) popLoopIn(dot,t.id);
       if (before?.open && !on) popLoop(before.rect,t.id);
@@ -4271,7 +4331,11 @@
     col.querySelectorAll('.pnN-mk').forEach((m) => {
       const w = ids.has(m.dataset.id); m.classList.toggle('wt', w); m.classList.toggle('ans', !w);
       let dot = m.querySelector('.pn-rail-dot');
-      if (w && !dot) { dot = el('<span class="pn-rail-dot" role="img" aria-label="Open thread"></span>'); m.append(dot); }
+      if (w && !dot) {
+        const description = askOf(m.dataset.id)?.upd ? 'Awaiting an agent reply' : 'Open thread';
+        dot = el(`<span class="pn-rail-dot" role="img" aria-label="${description}"></span>`);
+        m.append(dot);
+      }
       if (!w && dot) dot.remove();
       if (!ui.notes && reopened.has(m.dataset.id)) popLoopIn(dot,m.dataset.id);
       if (w && dot && !ui.notes) { const item = loopStates.get(m.dataset.id); if (item) item.rect = dot.getBoundingClientRect(); }
@@ -5044,10 +5108,13 @@
   async function doneVisit(land) {
     cBusy = true; cCut = false;
     const had = parkC; parkC = null;
+    // a version already Done when it opens has no state yet, so its slot is kept open for the cursor to aim at: hidden, it
+    // had no place, and the cursor clicked Done in from off the window
+    bar.classList.add('pn-slot');
     const cur = cNow = had || cursor(), word = stWord(cur);
     if (had) showTag(cur, false);
     let landed = false;
-    const go = () => { if (!landed) { landed = true; land(); } };
+    const go = () => { if (!landed) { landed = true; bar.classList.remove('pn-slot'); land(); } };
     // once Done is in, cDead holds (the summary covers the column), so the typing has its own end: a cut, the column shut, or Unlock
     const gone = () => cCut || !ui.notes || !WRAP.classList.contains('pn-done');
     const alive = () => { if (gone()) throw STOP; };
@@ -5071,6 +5138,7 @@
       if (e !== STOP) throw e;
       go(); typeAll(); if (!cur.gone) { cur.gone = true; fadeOff(cur.el); }
     } finally {
+      bar.classList.remove('pn-slot');
       cBusy = false; cCut = false; cNow = null;
     }
   }
@@ -5157,9 +5225,14 @@
   }
   function showDone(on) {
     rootCls('pn-done', on); bar.classList.toggle('pn-done', on);
+    const wasChecked = bar.classList.contains('pn-checked-done');
+    const checked = on && done?.questionsChecked === true;
+    bar.classList.toggle('pn-checked-done', checked);
     if (on) col.prepend(sheet); else WRAP.append(sheet);   // under Done the summary heads the notes column, the threads under it
     if (!on) ov.pnFit();   // the Overall box back from under Done, the user's words at their height
-    thrSync(); sentUi(); relayoutSoon();
+    thrSync();
+    if (wasChecked !== checked) outline();
+    sentUi(); relayoutSoon();
   }
   const replayCls = (x, c, ms) => { x.classList.remove(c); void x.offsetWidth; x.classList.add(c); setTimeout(() => x.classList.remove(c), ms); };
   function doneArrive() {
@@ -5249,7 +5322,8 @@
   window.PN_DONE = (d) => {
     const at = Number(d?.at) || 0;
     if (!at || at <= (dn.reopened || 0) || done?.at === at) return;   // reopened since, or showing already
-    done = { at, changed: (Array.isArray(d.changed) ? d.changed : []).map(String), next: (Array.isArray(d.next) ? d.next : []).map(String) };
+    done = { at, questionsChecked: d.questionsChecked === true, changed: (Array.isArray(d.changed) ? d.changed : []).map(String),
+      next: (Array.isArray(d.next) ? d.next : []).map(String) };
     fillDone(done); clearTimeout(dnPoll);
     if ((dn.seen || 0) >= at) showDone(true); else doneArrive();
   };
@@ -5273,8 +5347,9 @@
   // when trying to copy, the alert goes away")
   const unanswered = () => {
     if (!PN.ASKS_OPEN) return [];
-    const open = (a) => PN.answerable(a) && !PN.threadClosed(a);   // one answered in chat is closed
-    return PN.ASKS.some(open) ? byPage(PN.ASKS.filter((a) => open(a) || (PN.answerable(a) && a.id === nudge.at && replying === a.id))) : [];
+    const asks = PN.ASKS.filter((a) => !a.upd && PN.answerable(a));
+    return asks.some((a) => !PN.threadClosed(a))
+      ? byPage(asks.filter((a) => !PN.threadClosed(a) || (a.id === nudge.at && replying === a.id))) : [];
   };
   // words that change lift away and the new ones rise in
   function swapWords(w, text) {
@@ -5305,7 +5380,7 @@
     if (col.contains(ROOT.activeElement)) ROOT.activeElement.blur();
     showPart(blockEl(a.block)); if (!ui.notes) setNotes(true);
     // shown cleared: the layout scrolls only to a newly picked row, and a question already picked may be far off-screen
-    replying = a.ew ? null : a.id; sel = 'q:' + a.id; threadTop = top ? sel : null; footHold = null; shown = null; animateLine = true;
+    replying = a.ew || noticeRequestsReply(a) ? null : a.id; sel = 'q:' + a.id; threadTop = top ? sel : null; footHold = null; shown = null; animateLine = true;
     questionMove = quiet === 'next' || quiet === 'next-tab' ? quiet : false;
     try { renderRows(); } finally { questionMove = false; }   // one closed in chat has no Reply box
     doneShow(sel);
@@ -5350,7 +5425,7 @@
       if (sel !== picked || rewriting || threadWaiting({id}) || bubbleClick || notesSelection()) return;
       const all = allThreads(), i = all.findIndex((t) => t.id === id);
       if (!nudge.on && all[i]?.gone) return;   // the user switched tabs while the answered dot was fading
-      const open = all.filter((t) => threadWaiting(t) && (nudge.on || !t.gone || (t.panel && away(t.panel) && tabOf(t.panel))));
+      const open = all.filter((t) => waitingOnUser(t) && (nudge.on || !t.gone || (t.panel && away(t.panel) && tabOf(t.panel))));
       // past the last one down the page it wraps up to the first still open above (the user, 2026-11-08: "it doesn't seem to go
       // back to the top threads that are higher and cycle through them again"); once none is open it stops where it is, with
       // the cursor in Overall ("once all open threads are answered, if I'm doing that loop, I want it to just stop there and
@@ -5367,7 +5442,7 @@
       thrGo(next, 'next');
     };
     // With no next thread, finish the handoff before yielding to animation timers.
-    if (!PN.ASKS.some(openQuestion) && !pressed) advance();
+    if (!PN.ASKS.some((a) => !a.upd && openQuestion(a)) && !pressed) advance();
     else nextT = setTimeout(() => afterPress(advance), reduced() ? 0 : 520);
   }
   PN.beforeCopy = () => {
@@ -6211,7 +6286,7 @@
   function openRx(n, btn, from = 'row', grow = false, face = btn) {
     tipHide(false);
     rxFor = n; rxFrom = from; rxFace = face; rxBar.querySelectorAll('.rb').forEach((b) => b.classList.toggle('on', b.dataset.k === n.react));
-    rxBar.querySelector('.rb[data-k=party]').hidden = false;   // every reaction closes this round
+    rxBar.querySelector('.rb[data-k=party]').hidden = false;
     const r = btn.getBoundingClientRect(), w = rxBar.offsetWidth, h = rxBar.offsetHeight;
     let L, T;
     if (grow) {
@@ -6290,7 +6365,7 @@
     const keepEditing = n.id === editing && a?.tagName === 'TEXTAREA';
     if (keepEditing) caretOf.set(n, [a.selectionStart, a.selectionEnd]);
     if (n.react === k && (n.big || !big)) return peel(n);
-    const wasOpen = threadWaiting({id:n.id});
+    const wasOpen = waitingOnUser({id:n.id});
     n.react = k; if (big) n.big = true; else delete n.big; save(); if (from !== 'row') sel = n.id;
     if (wasOpen && !keepEditing && holdFinishedThread(n.id)) replying = null;
     render(); cheer(n, big, from);
@@ -6585,11 +6660,17 @@
 
   // a bubble whose words are new since the last draw (a note just saved or changed, a reply just left) pops in as in the
   // writing app; several at once come one after another. Nothing animates on the first draw, and a redraw keeps the rest still.
-  // One the user has just sent lifts out of the box the user typed it in instead (liftFrom, liftIn)
+  // A newly saved note lifts out of its Comment box instead (liftFrom, liftIn).
   const bubblesSeen = new Set(); let bubblesDrawn = false;
   function bubbleArrivals() {
+    const replyOccurrences = new Map();
     const fresh = [...col.querySelectorAll('.pnN-row > .b')].filter((b) => {
-      const k = b.closest('.pnN-row').dataset.id + '\n' + b.textContent;
+      const row = b.closest('.pnN-row').dataset.id;
+      const reply = b.classList.contains('re');
+      const key = JSON.stringify([row, reply, b.textContent]);
+      const occurrence = replyOccurrences.get(key) || 0;
+      if (reply) replyOccurrences.set(key, occurrence + 1);
+      const k = key + ':' + occurrence;
       return !bubblesSeen.has(k) && bubblesSeen.add(k);
     });
     const up = lift && performance.now() - lift.at < 1000 ? lift : null; lift = null;
@@ -6598,7 +6679,8 @@
       if (up && !reduced() && b.closest('.pnN-row').dataset.id === up.id && b.textContent === up.text) {
         moving.set(up.id, { kind: 'lift', t0: performance.now(), ms: 400 * SLOW, play: (r, t) => liftIn(r, up, t) }); return;
       }
-      b.classList.add('pn-in'); b.style.animationDelay = `${Math.min(5400, k * Math.min(850, 5400 / fresh.length))}ms`;
+      b.classList.add('pn-in');
+      if (!b.classList.contains('re')) b.style.animationDelay = `${Math.min(5400, k * Math.min(850, 5400 / fresh.length))}ms`;
     });
   }
   // a redraw a box's blur asks for, held while a mouse button is down: the press that took the focus is half a click, and
@@ -6608,17 +6690,14 @@
   const afterPress = (f) => { if (!pressed) return setTimeout(f, 0); afterUp.push(f); setTimeout(() => { const i = afterUp.indexOf(f); if (i >= 0) { afterUp.splice(i, 1); f(); } }, 2000); };
   addEventListener('pointerdown', () => { pressed = true; }, true);
   ['pointerup', 'pointercancel'].forEach((t) => addEventListener(t, () => { pressed = false; setTimeout(() => afterUp.splice(0).forEach((f) => f()), 0); }, true));
-  // the user's words as they sit in the box the user typed them in, for the bubble they become to lift out of (the user, on copying how
-  // messaging apps show "both my and their message": a reply's words "lift out of the Reply box into your bubble, the box
-  // reopens empty under it"; a new note's "become your bubble right where you typed them, with the same lift")
+  // the user's words as they sit in the Comment box, for the note to lift out of where it was typed
   let lift = null;
   function liftFrom(ta, id, text) {
     if (!text || !ta?.isConnected || reduced()) return;
     const r = ta.getBoundingClientRect(), cs = getComputedStyle(ta);
-    lift = { id, text, x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft), y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop), top: r.top, color: cs.color, at: performance.now() };
+    lift = { id, text, x: r.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft), y: r.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop), color: cs.color, at: performance.now() };
   }
-  // the words move from where they were typed to the bubble's place as it takes its colour, as a sent message rises out of
-  // the box it was typed in; an emptied Reply box under it glides down from where it was to make room. `t` ms in
+  // the words move from the Comment box to the bubble's place as it takes its colour. `t` ms in
   const LIFT = 'cubic-bezier(.25,1.12,.45,1)';
   function liftIn(r, up, t) {
     const first = paragraphs(up.text)[0], b = [...r.querySelectorAll(':scope > .b')].reverse().find((x) => x.textContent === first); if (!b) return;
@@ -6627,9 +6706,6 @@
     // a note of several paragraphs lifts as one: every bubble of the group rises from the box, then they settle apart
     const group = [b]; for (let x = b.nextElementSibling; x?.matches('.b.sp'); x = x.nextElementSibling) group.push(x);
     group.forEach((g) => g.animate([{ translate: `${up.dx.toFixed(1)}px ${up.dy.toFixed(1)}px`, backgroundColor: 'transparent', color: up.color }, { translate: '0 0', backgroundColor: cs.backgroundColor, color: cs.color }], d));
-    const box = [...r.querySelectorAll(':scope > .pnF-box')].find((x) => x.querySelector(':scope > textarea.re')), at = box?.getBoundingClientRect();   // no :has(), which older browsers throw on
-    if (up.box == null && at) up.box = up.top - at.top;
-    if (box && Math.abs(up.box || 0) > 1) box.animate([{ translate: `0 ${up.box.toFixed(1)}px` }, { translate: '0 0' }], { ...d, easing: 'cubic-bezier(.2,.7,.25,1)' });
   }
   // a thread the user answered in chat: the agent's question, then the user's words as the user's own reply with the agent's ✅ on its corner
   // and "Answered in chat" under it, the label as it was (the user, of a Done label there: "we don't need that, remove it").
@@ -6718,13 +6794,18 @@
     const id = 'q:' + a.id, x = state.answers[a.id], open = PN.answerable(a) && !PN.answerSent(x), editable = threadOpen(a), rs = PN.repliesOf(x);
     // a reply to one of the user's notes shows the user's note's words first, on the user's side, then the agent's answer
     // an open question on the whole page pins under the bar as the page scrolls (layout's pin)
-    const ovq = open && !a.block && !a.reply, wait = PN.answerable(a) && !PN.threadClosed(a);
+    const ovq = open && !a.block && !a.reply, wait = openQuestion(a);
+    const notice = a.upd && !noticeRequestsReply(a);
     // not yet arrived (postArrive): a one-line bubble with the agent typing in it, and nothing under it; until the cursor
     // taps it in, hidden, all but a reply's note of the user's
     const live = postLive.has(a.id), held = live && postStep.get(a.id) === 'held';
     const pcls = live ? (held ? ` ty ph${a.reply && a.said ? ' rp' : ''}` : ' ty') : '';
     const lbl = esc(postLabel(a, held));
-    const row = el(`<div class="pnN-row ask${id === sel ? ' sel' : ''}${open ? '' : ' old'}${ovq ? ' ovq' : ''}${wait ? ' wait' : ''}${pcls}" data-id="${esc(id)}">${newTag(a)}<div class="h"><span class="lbl">${lbl}</span></div>${a.quote ? `<div class="q">${esc(a.quote)}</div>` : ''}${noteWords(a)}${agentBubbles(a, live)}</div>`);
+    const row = el(`<div class="pnN-row ask${id === sel ? ' sel' : ''}${open ? '' : ' old'}${ovq ? ' ovq' : ''}${wait ? ' wait' : ''}${notice ? ' pn-notice' : ''}${pcls}" data-id="${esc(id)}">${newTag(a, editable && !live)}${a.upd && wait ? '<span class="pn-notice-pending">Awaiting reply</span>' : ''}<div class="h"><span class="lbl">${lbl}</span></div>${a.quote ? `<div class="q">${esc(a.quote)}</div>` : ''}${noteWords(a)}${agentBubbles(a, live)}</div>`);
+    row.querySelector('button.new')?.addEventListener('click', () => {
+      askGo(a, 'step', false);
+      if (rs.length || noticeRequestsReply(a)) ewEl(a.id)?.querySelector('button.new')?.focus({ preventScroll:true });
+    });
     noteGist(row, a);
     tick([...row.querySelectorAll(':scope > .b.nw')].pop(), id + ':source', true);
     // the user's reaction goes on the agent's bubble's bottom right corner, where its Sticker button sits. Nothing in the header
@@ -6747,7 +6828,7 @@
     // a thread the user sent: the user's last reply has the receipt; on an earlier version the agent has them all
     if (!open) tick([...row.querySelectorAll(':scope > .b.re')].pop(), id, !PN.ASKS_OPEN || PN.gotIt(x?.at));
     // the Reply box, while the thread is open and the user hasn't replied: one reply per thread, rewritten by a click on it
-    if (editable && !live && !rs.length) row.append(...replyBox(a, row));
+    if (editable && !live && !rs.length && (!a.upd || sel === id)) row.append(...replyBox(a, row));
     row.addEventListener('click', (e) => { if (e.target.closest('textarea,button') || (editable && e.target.closest('.b.re'))) return; bubbleAction(e, () => select(id)); });
     threadDates(row, a);
     return row;
@@ -6767,8 +6848,8 @@
     // the typing becomes a bubble and the box goes; with `stay` and nothing typed, the cursor stays in the box
     const commit = (stay) => {
       if (!ta.isConnected || !threadOpen(a)) return false;
-      const wasOpen = openQuestion(a), n = PN.answerOf(a), t = (n.draft || '').trim(); delete n.draft;
-      if (t) { PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); liftFrom(ta, id, t); }
+      const wasOpen = !a.upd && openQuestion(a), n = PN.answerOf(a), t = (n.draft || '').trim(); delete n.draft;
+      if (t) { PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); }
       save(); replying = stay && !t ? a.id : null;
       if (t && wasOpen) holdFinishedThread(id);
       renderRows();
@@ -6799,8 +6880,8 @@
       if (replying === a.id) replying = null;
       if (tabbed) { tabbed = false; return; }
       let picked = sel;
-      const wasOpen = openQuestion(a), n = state.answers[a.id], t = (n?.draft || '').trim();
-      if (t) { delete n.draft; PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); liftFrom(ta, id, t); save(); if (wasOpen && holdFinishedThread(id)) picked = null; }
+      const wasOpen = !a.upd && openQuestion(a), n = state.answers[a.id], t = (n?.draft || '').trim();
+      if (t) { delete n.draft; PN.setReplies(n, [...PN.repliesOf(n), t]); n.at = Date.now(); save(); if (wasOpen && holdFinishedThread(id)) picked = null; }
       afterPress(() => { if (bubbleClick || notesSelection()) return; if (ta.isConnected) renderRows(); if (t && wasOpen) nudgeNext(a, picked); });
     });
     ta.addEventListener('keydown', (e) => {
@@ -6825,7 +6906,7 @@
       if (changed) { if (v) list[i] = v; else list.splice(i, 1); PN.setReplies(n, list); n.at = Date.now(); save(); }
       const show = () => {
         render();
-        if (changed && v) nudgeNext(a, picked);
+        if (changed && v && !a.upd) nudgeNext(a, picked);
         if (changed && !v) offer('Reply deleted', () => { if (!threadOpen(a)) return; PN.setReplies(n, before); n.at = Date.now(); save(); sel = n.id; animateLine = true; render(); });
       };
       if (later) afterPress(show); else show();

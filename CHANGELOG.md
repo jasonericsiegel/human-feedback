@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.161.1 (2026-11-24)
+
+- Your agent can't mark a review Done while a question on it has no answer. It's told which questions are still open.
+- Copied feedback ends with a "Still open" line naming the questions you haven't answered, so your agent doesn't have to guess.
+- Updated and New notices sit beside the changed words. Select one to reply or react. One you leave alone doesn't count as an open thread.
+- Ask a question on a notice, and it becomes a thread waiting for your agent's reply.
+- Typing dots, your agent's messages, and your replies grow from their pointed corner. With Reduce Motion on, they appear without moving.
+- Done clears the open-questions count.
+- Fixed: a question you answered with a note could come back in a later round after its heading changed.
+- Fixed: on a version already Done when it opened, your agent's cursor clicked Done in from off the window. It now clicks at the top of the notes.
+- When a page is refused for missing its opening proof, your agent is told which template to copy.
+- Fixed: a part named inside an HTML comment was counted as part of the page.
+
 ## 1.159.3 (2026-11-24)
 
 - "Update available" also shows on reviews opened at a local web address (`127.0.0.1`). It used to show only on pages opened as files.
