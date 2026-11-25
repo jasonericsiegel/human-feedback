@@ -68,7 +68,7 @@ R1. [Option B · Calm] "the rounded corners"
 - `[[Part label]]` in your own words (`Qn.` or `You replied:`) is a link you wrote to that part. Pass it back unchanged when a command asks for the question as asked.
 - `Rn.` is one of your `--reply` answers: `Note:` is their note, `You replied:` your answer, and `Answer:` what the user said back (words, a reaction emoji, or both), one `Answer:` line (several only in a copy from before 1.83.0). Replies the user didn't answer aren't copied. An `Answer:` that asks a new question gets its own `--reply`, built from the answer's words (SKILL.md step 7).
 
-When the user responded to one of your `--updated` or `--added` threads, a `Your updates` block follows:
+When the user responds to one of your `--updated`, `--added`, or `--flag` notices, a `Your updates` block follows:
 
 ```
 Your updates
@@ -77,7 +77,7 @@ U1. [Pricing] "two months free" Annual now shows its saving: two months free.
    Answer: 👍
 ```
 
-- `Un.` is a response to an Updated or New notice. Read the change and the response together. A ❓ asks about the notice. A written question or a reaction such as 👎 may need a reply, depending on the context. For anything that needs an answer, use one `--reply` anchored to the same part and quote, using the user’s exact response as their words. Acknowledgments need no reply. Unanswered notices stay out of Copy.
+- `Un.` is a response to an Updated notice, a New notice, or an unlabelled flag. Read the change and the response together. A ❓ asks about the notice. A written question or a reaction such as 👎 may need a reply, depending on the context. For anything that needs an answer, use one `--reply` anchored to the same part and quote, using the user’s exact response as their words. Acknowledgments need no reply. Unanswered notices stay out of Copy.
 
 On a page with versions, the copied text gathers this round's notes from every version:
 

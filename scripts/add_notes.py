@@ -203,7 +203,6 @@ SCRIPT = re.compile(r"(<script\b[^>]*>).*?(</script\s*>)", re.S | re.I)
 STYLE_EL = re.compile(r"<style\b[^>]*>.*?</style\s*>", re.S | re.I)   # a [data-note] selector is no part
 TAG = re.compile(r"<!-- human-feedback -->(.*?)<!-- /human-feedback -->", re.S)
 COMMENT = re.compile(r"<!--.*?-->", re.S)   # a data-note named in a comment is no part
-PROOF_TEMPLATE = Path(__file__).resolve().parents[1] / "references" / "template-review-proof.html"
 ATTR = re.compile(r'([\w-]+)="([^"]*)"')
 BODY_END = re.compile(r"</body\s*>", re.I)
 HOLD = re.compile(r"<!-- human-feedback hold -->.*?<!-- /human-feedback hold -->\n?", re.S)
@@ -455,13 +454,16 @@ def parse_ask(arg: str) -> dict:
     return thread("q", (block, quote, text), (("block", block), ("quote", quote), ("text", text)))
 
 
-def parse_updated(arg: str, *, added: bool = False) -> dict:
-    """One --updated or --added: its [Part label], an optional "quote", then one line on the change."""
+def parse_updated(arg: str, *, added: bool = False, flagged: bool = False) -> dict:
+    """One notice: its [Part label], an optional "quote", and its message."""
     block, quote, text = ASK.fullmatch(arg).groups()
     if not text:
-        flag = '--added' if added else '--updated'
-        fail(f'{flag} needs one line on the change after its [Part label] and any "quote"')
-    return thread("u", (block, quote, text), (("block", block), ("quote", quote), ("text", text), ("added", added)))
+        option = '--flag' if flagged else '--added' if added else '--updated'
+        fail(f'{option} needs a message after its [Part label] and any "quote"')
+    fields = (("block", block), ("quote", quote), ("text", text), ("added", added))
+    if flagged:
+        return thread("f", (block, quote, text), (*fields, ("flagged", True)))
+    return thread("u", (block, quote, text), fields)
 
 
 def parse_reply(note: str, text: str) -> dict:
@@ -750,12 +752,13 @@ def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int
     asks = carried(page, attrs, args, args.ask and [parse_ask(a) for a in args.ask], "data-asks")
     # what changed since their notes: this version's own, never carried (threads() hands on only questions and replies)
     changes = None
-    if args.updated is not None or args.added is not None:
-        changes = list({u["id"]: u for u in ([parse_updated(u) for u in args.updated or []]
+    if any(entries is not None for entries in (args.updated, args.added, args.flag)):
+        changes = list({u["id"]: u for u in ([parse_updated(u, flagged=True) for u in args.flag or []]
+                        + [parse_updated(u) for u in args.updated or []]
                         + [parse_updated(u, added=True) for u in args.added or []])}.values())
         added_parts = {label_key(u.get("block") or "") for u in changes if u.get("added")}
         for u in changes:
-            if label_key(u.get("block") or "") in added_parts:
+            if not u.get("flagged") and label_key(u.get("block") or "") in added_parts:
                 u["added"] = True   # a newly added part is New, even when --updated also names it
     updated = carried(page, attrs, args, changes, "data-updated")
     replies = carried(page, attrs, args, args.reply and [parse_reply(*r) for r in args.reply], "data-replies")
@@ -1602,6 +1605,8 @@ def parse_args(argv) -> argparse.Namespace:
                     help='changed content from their notes (Updated pill); pass all --updated/--added entries together: \'[Part] "quote" what changed\'')
     ap.add_argument("--added", action="append", metavar="CHANGE",
                     help='a part added from their notes (New wins over Updated); pass all --updated/--added entries together: \'[Part] "quote" what was added\'')
+    ap.add_argument("--flag", action="append", metavar="NOTICE",
+                    help='a notice with a default and no reply needed: \'[Part] "quote" what you will do\'')
     ap.add_argument("--reply", nargs=2, action="append", metavar=("NOTE", "ANSWER"),
                     help='answer one of their notes: \'[Part] "quote" their words\' "your answer"')
     ap.add_argument("--suggest-reactions", nargs=2, action="append", metavar=("MESSAGE", "REACTIONS"),
@@ -1659,15 +1664,6 @@ def open_page(page: Path) -> None:
             print(f"human-feedback: opened {page}" + (f"; {details}" if details else ""))
 
 
-def require_review_proof(page: Path) -> None:
-    """Reject incomplete proof before any page or sidecar write."""
-    sys.dont_write_bytecode = True
-    import review_proof  # pylint: disable=import-outside-toplevel
-    errors = review_proof.check_file(page)
-    if errors:
-        fail("Review refused: " + "; ".join(errors) + f". Copy {PROOF_TEMPLATE} into the page and fill it in.")
-
-
 def main(argv=None, *, analytics_url: str | None = None) -> int:
     """Add or replace the tag, sync the version set, and report; an internal override can disable analytics."""
     args = parse_args(argv)
@@ -1683,9 +1679,6 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail(f"no such page: {page}")
     elif args.after and not args.name:
         fail("--after needs --name")
-    # Copying an unshown draft and acknowledging old notes do not admit a review.
-    if not (args.new_version or args.received or args.reopen):
-        require_review_proof(page)
     text = page.read_text(encoding="utf-8")
     attrs = read_tag(text)
     pictures = args.pictures or last_pictures(page, attrs)
@@ -1700,7 +1693,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail("--feedback-file goes with --received")
     if args.reopen:
         if any((args.converged, args.received, args.next_round, args.new_version, args.copy, args.after, args.name, args.ask,
-                args.updated, args.added, args.reply, args.suggest_reactions, args.done, args.gist, args.answered,
+                args.updated, args.added, args.flag, args.reply, args.suggest_reactions, args.done, args.gist, args.answered,
                 args.settled, args.merge, args.again, args.helper, args.owns,
                 args.appearance, args.what_changed, args.next_step)):
             fail("--reopen goes on its own")
@@ -1709,7 +1702,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
     if (args.what_changed or args.next_step) and not args.converged:
         fail("--what-changed and --next-step go with --converged")
     if args.converged:
-        if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
+        if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.flag, args.reply,
                 args.suggest_reactions, args.done, args.gist, args.answered, args.settled, args.merge, args.again,
                 args.helper, args.owns, args.appearance)):
             fail("--converged goes on its own, with --what-changed and --next-step")
@@ -1728,7 +1721,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         print(converge(page, attrs, args.what_changed, args.next_step or []))
         return 0
     if args.received:
-        if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
+        if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.flag, args.reply,
                 args.suggest_reactions, args.done,
                 args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns, args.appearance)):
             fail("--received goes on its own")
@@ -1737,7 +1730,8 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         print(receive(page, attrs, args.feedback_file))
         return 0
     unplaced = (unplaced_asks(text, args.ask or []) + unplaced_asks(text, args.updated or [], "--updated")
-                + unplaced_asks(text, args.added or [], "--added"))
+                + unplaced_asks(text, args.added or [], "--added")
+                + unplaced_asks(text, args.flag or [], "--flag"))
     if unplaced and not os.environ.get("HF_PARTLESS_ASKS"):   # the layer tests' pages from before 1.115.0 only
         fail("\n".join(unplaced))
     broken = broken_links(text, args)
@@ -1804,8 +1798,6 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         line += f"; {len(earlier)} answered in chat, closed in {'their' if len(earlier) != 1 else 'its'} own round"
     print((line + "\n" + next_step(page) if args.new_version else line)
           + (carrying(lists["carry"]) if args.new_version or args.next_round else ""))
-    if args.new_version:
-        print("Draft only: add or refresh the opening proof before the follow-up run, showing, or queueing.")
     if not args.new_version:
         if args.hold:
             print(f"Held without opening: {page}. Open it later: "

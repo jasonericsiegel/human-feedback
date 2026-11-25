@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.165.1 (2026-11-25)
+
+- Fixed: when your agent asks you to choose and names its pick, it suggests ✅ 👍 👎 ❓. It used to suggest only the question mark.
+
+## 1.165.0 (2026-11-25)
+
+- Updated and New notices use the same bubble as your agent's other messages.
+- Your agent can leave a flag that says what it will do unless you say otherwise. A flag you leave alone isn't copied.
+
+## 1.164.0 (2026-11-25)
+
+- Review pages no longer need to open with your ask, what you agreed to, and what your agent checked. Your agent still compares its work with your ask before showing it to you.
+
 ## 1.163.0 (2026-11-25)
 
 - Your agent can suggest reactions that fit each message, including the question mark. Suggested icons stay bright and the others dim. All six reactions remain available.

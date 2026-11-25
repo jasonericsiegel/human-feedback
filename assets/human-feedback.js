@@ -3123,7 +3123,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.163.0', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.165.1', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -3537,7 +3537,6 @@
     :root.pn-dark{--pn-current-bub:#52525a;--pn-current-ink:#f5f5f7}
     .pnN-row .qb[data-age="current"]{background:var(--pn-current-bub);color:var(--pn-current-ink)}
     .pnN-row .qb[data-age="prior"]{background:var(--pn-bub);color:var(--pn-ink)}
-    .pnN-row.pn-notice .qb[data-age]{background:transparent;color:var(--pn-ink);padding-inline-start:0}
     .pnN-row .pn-day{display:grid;place-items:center;min-height:18px;margin:12px 0 6px;color:var(--pn-muted);font:600 12.6px/1.4 var(--pn-ui);text-align:center;cursor:help;outline-offset:4px}
     .pnN-row .pn-day:focus-visible{outline:2px solid var(--pn-me);border-radius:4px}
     .pnN-row>.pn-day{opacity:1}
@@ -3711,7 +3710,7 @@
   const openQuestion = (a) => !bar.classList.contains('pn-checked-done') && PN.answerable(a)
     && !postLive.has(a.id) && (a.upd ? noticeRequestsReply(a) : !PN.threadClosed(a));
   function newTag(a, selectable = false) {
-    if (!a.upd) return '';
+    if (!a.upd || a.flagged) return '';
     const label = a.added ? 'New' : 'Updated', name = a.added ? 'new' : 'new upd';
     return selectable ? `<button type="button" class="${name}" aria-label="Select ${label} notice">${label}</button>`
       : `<span class="${name}">${label}</span>`;
@@ -3767,6 +3766,7 @@
   // a message's label; a reply waiting to be tapped in is still just the user's note, so it's labelled with the user's note's part
   const asker = (a) => HELPERS.find((h) => h.owns.has(normLabel(a.block)))?.name;
   const postLabel = (a, held) => (PN.fromRound(a) ? PN.fromRound(a) + ' · ' : '') + (asker(a) ? asker(a) + ' · ' : '') + (held && a.reply && a.said ? a.block || 'Page'
+    : a.flagged ? a.block || 'Page'
     : (a.reply ? 'Reply' : a.block ? 'Question' : 'Overall question') + (a.block ? ' · ' + a.block : ''));
   // the three dots typing in a waiting bubble, their pulse carried on from where it was, so a redraw never restarts it
   const dots = () => `<span class="td" role="img" aria-label="${esc(PN.AGENT || 'Agent')} is typing" style="--pn-ph:-${Math.round(performance.now() % 1200)}ms"><i></i><i></i><i></i></span>`;
@@ -6846,6 +6846,14 @@
     const pcls = live ? (held ? ` ty ph${a.reply && a.said ? ' rp' : ''}` : ' ty') : '';
     const lbl = esc(postLabel(a, held));
     const row = el(`<div class="pnN-row ask${id === sel ? ' sel' : ''}${open ? '' : ' old'}${ovq ? ' ovq' : ''}${wait ? ' wait' : ''}${notice ? ' pn-notice' : ''}${pcls}" data-id="${esc(id)}">${newTag(a, editable && !live)}${a.upd && wait ? '<span class="pn-notice-pending">Awaiting reply</span>' : ''}<div class="h"><span class="lbl">${lbl}</span></div>${a.quote ? `<div class="q">${esc(a.quote)}</div>` : ''}${noteWords(a)}${agentBubbles(a, live)}</div>`);
+    if (a.flagged && editable && !live && !rs.length) {
+      row.tabIndex = 0;
+      row.addEventListener('keydown', (e) => {
+        if (e.target !== row || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        askGo(a, 'step', false);
+      });
+    }
     row.querySelector('button.new')?.addEventListener('click', () => {
       askGo(a, 'step', false);
       if (rs.length || noticeRequestsReply(a)) ewEl(a.id)?.querySelector('button.new')?.focus({ preventScroll:true });

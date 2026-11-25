@@ -70,7 +70,9 @@ When threads share one answer, the agent can merge them into the question. The o
 
 ## Changed and added parts (step 7's `--updated` and `--added`)
 
-An `--updated` notice shows Updated beside the existing words that changed. An `--added` notice shows New on a part that was added. New takes precedence for notices on that part. Select a notice to reveal Reply, or use React on its bubble. At first the notice is outside the thread count, arrows, and Copy reminder. A ❓ reaction or a committed written question adds it to the thread list and marks it Awaiting reply. A question mark inside a link or quoted text stays ordinary feedback. The user can still copy the feedback immediately. The notice and its pill stay with their round. Responses copy under Your updates, where the agent reads the context and answers anything that needs a reply.
+A `--flag` notice uses the usual agent bubble and starts with no label or open purple dot. The message tells you what the agent will do if you skip it. Select the bubble to reply. Copy skips the notice if you leave it alone.
+
+Change notices also use the usual agent bubble. An `--updated` notice shows Updated beside the existing words that changed. An `--added` notice shows New on a part that was added. New takes precedence for notices on that part. Select a notice to reveal Reply, or use React on its bubble. At first the notice is outside the thread count, arrows, and Copy reminder. A ❓ reaction or a committed written question adds it to the thread list and marks it Awaiting reply. A question mark inside a link or quoted text stays ordinary feedback. The user can still copy the feedback immediately. The notice and its pill stay with their round. Responses copy under Your updates, where the agent reads the context and answers anything that needs a reply.
 
 ## Done (step 8)
 
