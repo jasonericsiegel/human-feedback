@@ -64,6 +64,8 @@ Your answer is short. A blank line in `--reply`, `--again` or `--ask` makes sepa
 
 The row counts as one thread and stays open until the user answers or the agent closes it. It gets no New pill, and Copy never reminds the user to answer it. A done mark marks the original note in the round where the user wrote it. When the user steps back with the version arrows, that row has the ✅, stays read-only and counts as a thread that isn't open. The new round has no duplicate row for it, and the opening never stamps it. A thread the user closes with an emoji reaction stays in its own round too, with the reaction, and isn't carried. The new round holds your replies and questions and carried unanswered threads. Done marks add no separate thread or count.
 
+When threads share one answer, the agent can merge them into the question. The original messages stay visible in time order with the usual date dividers. The combined conversation has one Reply box and one open-thread count.
+
 ## Changed and added parts (step 7's `--updated` and `--added`)
 
 An `--updated` notice shows Updated beside the existing words that changed. An `--added` notice shows New on a part that was added. New takes precedence for notices on that part. Select a notice to reveal Reply, or use React on its bubble. At first the notice is outside the thread count, arrows, and Copy reminder. A ❓ reaction or a committed written question adds it to the thread list and marks it Awaiting reply. A question mark inside a link or quoted text stays ordinary feedback. The user can still copy the feedback immediately. The notice and its pill stay with their round. Responses copy under Your updates, where the agent reads the context and answers anything that needs a reply.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.162.0 (2026-11-24)
+
+- Threads that need the same answer can share one conversation and one Reply box. The original messages and dates stay visible.
+
 ## 1.161.1 (2026-11-24)
 
 - Your agent can't mark a review Done while a question on it has no answer. It's told which questions are still open.

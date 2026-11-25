@@ -514,7 +514,7 @@ def parse_answered(question: str, answer: str, pool: list[dict]) -> dict:
     if not answer:
         fail('--answered needs your question as the page asked it ([Part label] "quote" question) and their answer')
     found = find_thread(question, pool, "--answered")
-    keep = ("id", "kind", "from", "block", "quote", "said", "text", "gist", "authoredAt")
+    keep = ("id", "kind", "from", "block", "quote", "said", "text", "gist", "authoredAt", "history")
     return {**{k: found[k] for k in keep if found.get(k)}, "answer": answer}
 
 
@@ -547,7 +547,7 @@ def parse_again(old: str, shorter: str, pool: list[dict]) -> tuple[dict, dict]:
         fail("--again needs the thread as the page asked it and its shorter words")
     block, quote, said = (found.get(k) for k in ("block", "quote", "said"))
     if found.get("kind") == "ask":
-        return found, thread("q", (block, quote, shorter), (("block", block), ("quote", quote), ("text", shorter)))
+        return found, thread("q", (block, quote, shorter), (("block", block), ("quote", quote), ("text", shorter), ("history", found.get("history"))))
     return found, thread("r", (block, quote, said, shorter),
                          (("block", block), ("quote", quote), ("said", said), ("text", shorter), ("gist", found.get("gist"))))
 
@@ -581,7 +581,7 @@ def listed(attrs: dict, attr: str) -> list[dict]:
 def threads(attrs: dict, origin: int) -> list[dict]:
     """The agent's threads a round hands on: those it carried itself, then its questions and replies (never its done
     marks, which ask nothing, nor one the user answered in chat), each with its kind and the round it was first asked in."""
-    keep = ("id", "block", "quote", "said", "text", "gist", "authoredAt")
+    keep = ("id", "block", "quote", "said", "text", "gist", "authoredAt", "history")
     closed = {x.get("id") for x in listed(attrs, "data-answered")}
     entry = next((v for i, v in enumerate(listed(attrs, "data-versions")) if i + 1 == origin), {})
     own = [{**{k: x[k] for k in keep if x.get(k)},
@@ -604,16 +604,23 @@ def date_messages(lists: dict, attrs: dict, when: str, round_at: str | None) -> 
     """
     names = ("asks", "replies", "updated", "carry")
     previous = {x.get("id"): x for name in names for x in listed(attrs, "data-" + name)}
+    previous.update({h["id"]: h for x in list(previous.values()) for h in x.get("history", [])})
+
+    def date(item: dict, carried_item: bool) -> None:
+        old = previous.get(item.get("id"))
+        authored = item.get("authoredAt") or (old or {}).get("authoredAt")
+        if authored or not carried_item:
+            item["authoredAt"] = (authored or
+                                  ((round_at or attrs.get("data-at") or attrs.get("data-made")) if old is not None else None)
+                                  or when)
     for name in names:
         if lists.get(name) is None:
             continue
         items = json.loads(lists[name])
         for item in items:
-            old = previous.get(item.get("id"))
-            if name == "carry" and not item.get("authoredAt") and not (old or {}).get("authoredAt"):
-                continue   # unknown legacy carry keeps its origin; never pretend the new round authored it
-            item["authoredAt"] = (item.get("authoredAt") or (old or {}).get("authoredAt")
-                                  or ((round_at or attrs.get("data-at") or attrs.get("data-made")) if old is not None else None) or when)
+            date(item, name == "carry")
+            for source in item.get("history", []):
+                date(source, bool(source.get("from")))
         lists[name] = json.dumps(items, ensure_ascii=False)
 
 
@@ -696,6 +703,41 @@ def closed_earlier(entries: list[dict], page: Path) -> list[dict]:
             for x in listed(read_tag(e["path"].read_text(encoding="utf-8")), "data-answered")]
 
 
+def merge_threads(asks: str | None, replies: str | None, base: list[dict],
+                  pairs: list, previous: list[dict]) -> tuple[str | None, str | None, list[dict]]:
+    """Put overlapping threads in the existing question, keeping the original messages and dates."""
+    own_asks, own_replies = json.loads(asks or "[]"), json.loads(replies or "[]")
+    questions = own_asks + [t for t in base if t.get("kind") == "ask"]
+    sources = questions + [{**r, "kind": "reply"} for r in own_replies] + [t for t in base if t.get("kind") == "reply"]
+    histories = {q["id"]: q["history"] for q in previous if q.get("history")}
+    owner = {}
+    for q in questions:
+        if q["id"] in histories and not q.get("history"):
+            q["history"] = histories[q["id"]]
+        for source in q.get("history", []):
+            owner[source["id"]] = q["id"]
+            sources.append(source)
+    for old, question in pairs:
+        source = find_thread(old, sources, "--merge")
+        target = find_thread(question, questions, "--merge")
+        if source["id"] == target["id"]:
+            fail("--merge needs two different threads")
+        if target["id"] in owner:
+            fail("--merge needs a question that is still its own thread")
+        if source["id"] in owner:
+            if owner[source["id"]] != target["id"]:
+                fail("--merge: the thread is already in a different question")
+            continue
+        history = target.setdefault("history", [])
+        history.extend(source.get("history", []))
+        history.append({"kind": "ask", **{k: v for k, v in source.items() if k != "history"}})
+        for entry in history:
+            owner[entry["id"]] = target["id"]
+    own_replies = [r for r in own_replies if r["id"] not in owner]
+    encode = lambda items: json.dumps(items, ensure_ascii=False) if items else None
+    return encode([a for a in own_asks if a["id"] not in owner]), encode(own_replies), [t for t in base if t["id"] not in owner]
+
+
 def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int) -> dict:
     """The agent's lists the tag will hold after this run: its questions, replies, done marks and the threads the user
     answered in chat, and the threads it carries from the round before (a new version takes the last version's,
@@ -726,6 +768,9 @@ def agent_lists(page: Path, attrs: dict, args, entries: list[dict], current: int
     again = [parse_again(old, new, base) for old, new in args.again or []]
     asks = with_again(asks, [new for old, new in again if old.get("kind") == "ask"])
     replies = with_again(replies, [new for old, new in again if old.get("kind") != "ask"])
+    previous = listed(attrs, "data-asks") + listed(attrs, "data-carry")
+    if args.merge or any(t.get("history") for t in previous):
+        asks, replies, base = merge_threads(asks, replies, base, args.merge or [], previous)
     # what --answered can close: this round's questions and replies, then the ones carried from earlier rounds
     pool = ([{**a, "kind": "ask"} for a in json.loads(asks or "[]")]
             + [{**r, "kind": "reply"} for r in json.loads(replies or "[]")] + base + closed_earlier(entries, page))
@@ -1422,7 +1467,7 @@ def start_version(page: Path, args) -> Path:
         ("--converged", args.converged), ("--reopen", args.reopen), ("--name", args.name), ("--ask", args.ask), ("--updated", args.updated),
         ("--added", args.added),
         ("--reply", args.reply), ("--done", args.done), ("--gist", args.gist), ("--answered", args.answered),
-        ("--settled", args.settled), ("--again", args.again), ("--what-changed", args.what_changed), ("--helper", args.helper), ("--owns", args.owns),
+        ("--settled", args.settled), ("--merge", args.merge), ("--again", args.again), ("--what-changed", args.what_changed), ("--helper", args.helper), ("--owns", args.owns),
         ("--next-step", args.next_step)) if given]
     if clash:
         fail(f"--new-version can't go with {', '.join(clash)}: it only makes the file. Name it and pass any "
@@ -1522,6 +1567,8 @@ def parse_args(argv) -> argparse.Namespace:
     ap.add_argument("--settled", nargs=2, action="append", metavar=("THREAD", "WHY"),
                     help='close an earlier question or reply this version carries because your changes settled it or made it '
                          'moot: \'[Part] "quote" the thread as the page shows it\' "one line on why"; it is not carried on')
+    ap.add_argument("--merge", nargs=2, action="append", metavar=("THREAD", "QUESTION"),
+                    help="move a thread into a question, with one answer for both")
     ap.add_argument("--again", nargs=2, action="append", metavar=("THREAD", "SHORTER"),
                     help='ask again, shorter, a question or reply left unanswered that still needs an answer: '
                          '\'[Part] "quote" what the page asked\' "shorter words"; it replaces the old thread')
@@ -1603,7 +1650,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail("--feedback-file goes with --received")
     if args.reopen:
         if any((args.converged, args.received, args.next_round, args.new_version, args.copy, args.after, args.name, args.ask,
-                args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.settled, args.again, args.helper, args.owns,
+                args.updated, args.added, args.reply, args.done, args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns,
                 args.appearance, args.what_changed, args.next_step)):
             fail("--reopen goes on its own")
         print(reopen(page, attrs))
@@ -1612,7 +1659,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         fail("--what-changed and --next-step go with --converged")
     if args.converged:
         if any((args.received, args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply,
-                args.done, args.gist, args.answered, args.settled, args.again, args.helper, args.owns, args.appearance)):
+                args.done, args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns, args.appearance)):
             fail("--converged goes on its own, with --what-changed and --next-step")
         waiting_on = unanswered_asks(page, attrs)
         if waiting_on:
@@ -1630,7 +1677,7 @@ def main(argv=None, *, analytics_url: str | None = None) -> int:
         return 0
     if args.received:
         if any((args.next_round, args.copy, args.after, args.name, args.ask, args.updated, args.added, args.reply, args.done,
-                args.gist, args.answered, args.settled, args.again, args.helper, args.owns, args.appearance)):
+                args.gist, args.answered, args.settled, args.merge, args.again, args.helper, args.owns, args.appearance)):
             fail("--received goes on its own")
         if attrs and pictures == "on":
             make_folder(feedback_folder(page, workspace, attrs))

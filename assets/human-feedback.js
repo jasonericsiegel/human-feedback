@@ -532,7 +532,7 @@
         if (closed && c.kind === 'ask') carriedClosed.push(c);
         return !closed;
       })
-      .map((c) => ({ id: String(c.id), block: c.block, quote: c.quote, text: String(c.text), authoredAt: c.authoredAt, from: +c.from || 0, carried: true, ...(c.kind === 'reply' ? { reply: true, said: String(c.said || ''), gist: c.gist } : {}) }));
+      .map((c) => ({ id: String(c.id), block: c.block, quote: c.quote, text: String(c.text), authoredAt: c.authoredAt, history: c.history, from: +c.from || 0, carried: true, ...(c.kind === 'reply' ? { reply: true, said: String(c.said || ''), gist: c.gist } : {}) }));
     kept.forEach((a) => tie(a.id));
     ASKS.push(...kept);
   }
@@ -545,7 +545,7 @@
     const id = String(x.id), a = ASKS.find((q) => q.id === id);
     if (a) { a.ew = String(x.answer).trim(); return; }
     if (!x.text) return;
-    ASKS.push({ id, block: x.block, quote: x.quote, text: String(x.text), authoredAt: x.authoredAt, ew: String(x.answer).trim(),
+    ASKS.push({ id, block: x.block, quote: x.quote, text: String(x.text), authoredAt: x.authoredAt, history: x.history, ew: String(x.answer).trim(),
       ...(+x.from ? { carried: true, from: +x.from } : {}), ...(x.kind === 'reply' ? { reply: true, said: String(x.said || ''), gist: x.gist } : {}) });
   });
   function replyDraft(a) {
@@ -3114,7 +3114,7 @@
   // offers them as coming; the rest (team review, notes kept across browsers, pages shared online; the user, 2026-11-11:
   // "Multiplayer (team) support, Persistent notes so that they aren't lost if you switch browsers, cloud/artifact support")
   // aren't built anywhere yet, so they always show. `version` matches SKILL.md (scripts/test_about_version.py checks) ----------
-  const ABOUT = { version: '1.161.1', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
+  const ABOUT = { version: '1.162.0', repo: 'https://github.com/jasonericsiegel/human-feedback', linkedin: 'https://www.linkedin.com/in/jasonericsiegel',
     github: 'https://github.com/jasonericsiegel', soon: [['Attach screenshots to your notes', !PN.PICTURES], ['Review with your team', true],
       ['Keep your notes when you switch browsers', true]].filter(([, off]) => off).map(([s]) => s) };
   // ---------- anonymous counts: local installs only, sent once and forgotten ----------
@@ -3690,7 +3690,7 @@
   let building = false;   // the round's opening is under way (the opening, below): arrivals wait for it
   let roundTurn = null, turnNow = null, turnBack = null;   // the bar's turn to a new round, as the opening plays it, its end at once, and Replay's turn back (below)
   if (PN.ASKS_OPEN) PN.ASKS.filter((a) => a.ew && !ewSeen[a.id]).forEach((a) => { if (reduced()) ewKeep(a.id); else ewLive.add(a.id); });
-  if (PN.ASKS_OPEN) PN.ASKS.filter((a) => PN.answerable(a) && !PN.fromRound(a) && !PN.replied(state.answers[a.id]) && !ewSeen[a.id]).forEach((a) => { if (reduced()) ewKeep(a.id); else { postLive.add(a.id); postStep.set(a.id, 'held'); } });
+  if (PN.ASKS_OPEN) PN.ASKS.filter((a) => PN.answerable(a) && !a.history?.length && !PN.fromRound(a) && !PN.replied(state.answers[a.id]) && !ewSeen[a.id]).forEach((a) => { if (reduced()) ewKeep(a.id); else { postLive.add(a.id); postStep.set(a.id, 'held'); } });
   const ewOpen = (a) => !!a.ew && ewLive.has(a.id);
   // new questions count when the bubble lands; carried questions are there from the start
   const noticeRequestsReply = (a) => {
@@ -4910,7 +4910,7 @@
   }
   const frame = () => new Promise((ok) => requestAnimationFrame(ok));
   // the round's messages and threads closed in chat, as they were before the opening played
-  const rwPosts = () => (PN.ASKS_OPEN ? PN.ASKS.filter((a) => PN.answerable(a) && !PN.fromRound(a) && !PN.replied(state.answers[a.id])).map((a) => a.id) : []);
+  const rwPosts = () => (PN.ASKS_OPEN ? PN.ASKS.filter((a) => PN.answerable(a) && !a.history?.length && !PN.fromRound(a) && !PN.replied(state.answers[a.id])).map((a) => a.id) : []);
   const rwMarks = () => (PN.ASKS_OPEN ? PN.ASKS.filter((a) => a.ew) : []);
   async function replay() {
     if (OP.live || rpOn) return;
@@ -5849,13 +5849,15 @@
     const entry = V?.list[(a?.carried && a.from ? a.from : (V?.cur ?? 0) + 1) - 1];
     return Date.parse(a?.authoredAt || '') || (a?.carried ? Date.parse(entry?.at || '') || 0 : PN.ROUND_AT || PN.MADE);
   }
+  const historicalMessageDates = new WeakMap();
   // A date belongs to the next message, so each thread starts with one and repeats it only when the local day changes.
   function threadDates(row, a, note) {
     row.querySelectorAll('.pn-day').forEach((x) => x.remove());
     let day = '';
     const sourceAt = a ? PN.sourceReceipt(a) : 0;
     row.querySelectorAll('.qb,.b').forEach((b) => {
-      const at = b.matches('.qb') ? roundAt(a) : a ? b.classList.contains('nw') ? sourceAt : PN.messageReceipt(state.answers[a.id]) : PN.messageReceipt(note);
+      const at = historicalMessageDates.get(b)
+        ?? (b.matches('.qb') ? roundAt(a) : a ? b.classList.contains('nw') ? sourceAt : PN.messageReceipt(state.answers[a.id]) : PN.messageReceipt(note));
       if (!at || !Number.isFinite(at)) return;
       const next = localDay(at); if (next === day) return; day = next;
       const d = document.createElement('time'); d.className = 'pn-day'; d.dateTime = new Date(at).toISOString();
@@ -6517,6 +6519,28 @@
     if (!parts.length) parts.push({ text:'', question:false });
     return parts.map((p) => `<div class="qb${live ? ' ty' : ''}${p.question ? ' pn-question' : ''}" data-age="${PN.fromRound(a) ? 'prior' : 'current'}">${live ? p.text : linked(p.text)}</div>`).join('');
   };
+  function addThreadHistory(row, a) {
+    if (!a.history?.length) return;
+    const current = [...row.querySelectorAll(':scope > .qb')];
+    const after = current.at(-1)?.nextSibling || null;
+    const groups = [];
+    for (const history of a.history) {
+      const source = { ...history, carried: !!history.from, reply: history.kind === 'reply', gist: null };
+      const authored = roundAt(source);
+      const received = source.said ? PN.sourceReceipt(source) : 0;
+      const quote = source.quote && source.quote !== a.quote ? `<div class="q">${esc(source.quote)}</div>` : '';
+      const nodes = (html, at) => [...el(`<div>${html}</div>`).children].map((node) => {
+        historicalMessageDates.set(node, at);
+        return node;
+      });
+      if (source.said) groups.push({ at:received || authored, nodes:nodes(quote + noteWords(source), received) });
+      groups.push({ at:authored, nodes:nodes((source.said ? '' : quote) + agentBubbles(source), authored) });
+    }
+    groups.push({ at:roundAt(a), nodes:current });
+    const fragment = document.createDocumentFragment();
+    for (const { nodes } of groups.sort((x, y) => x.at - y.at)) fragment.append(...nodes);
+    row.insertBefore(fragment, after);
+  }
   // Section links use the same document navigation as the Outline.
   ROOT.addEventListener('click', (e) => {
     const go = tgt(e).closest?.('.pn-go'); if (!go) return;
@@ -6719,6 +6743,7 @@
       + (step < 3 ? `<div class="ew-f ew-box${step >= 2 ? ' shut' : ''}"><div><div class="ew-re${step === 1 ? ' focus' : ''}${n ? ' typed' : ''}" aria-hidden="true"${step ? '' : ` title="${esc(AGENT)} is filling this in from chat"`}>`
         + `<span class="ph">Reply</span><span class="tx"><span class="w">${esc(a.ew.slice(0, n))}</span><span class="cr"></span></span></div></div></div>` : '')
       + `<div class="ew-f ew-ans${step < 2 ? ' shut' : ''}"><div>${userBubbles(a.ew, ' was', { cls: ' tb', html: `<div class="qk" role="img" aria-label="Answered">${PN.art('check')}</div>` })}<div class="ew-src">Answered in chat</div></div></div></div></div>`);
+    addThreadHistory(row, a);
     noteGist(row, a);
     tick([...row.querySelectorAll(':scope > .b.nw')].pop(), id + ':source', true);
     if (x && REACT[x.react]) lastQb(row).appendChild(sticker(x));
@@ -6806,6 +6831,7 @@
       askGo(a, 'step', false);
       if (rs.length || noticeRequestsReply(a)) ewEl(a.id)?.querySelector('button.new')?.focus({ preventScroll:true });
     });
+    addThreadHistory(row, a);
     noteGist(row, a);
     tick([...row.querySelectorAll(':scope > .b.nw')].pop(), id + ':source', true);
     // the user's reaction goes on the agent's bubble's bottom right corner, where its Sticker button sits. Nothing in the header
